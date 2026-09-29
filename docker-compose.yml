@@ -1,0 +1,140 @@
+# Snippet Searcher: la plataforma entera en un solo compose.
+# El mismo archivo sirve para dev y prod: lo que cambia es el .env de cada VM (IMAGE_TAG=dev o IMAGE_TAG=prod).
+# Hacia afuera solo se publica nginx; las bases, Redis y el asset-service se atan a 127.0.0.1
+# para poder correr un servicio desde el IDE contra el resto de la plataforma.
+
+services:
+
+  proxy:
+    image: nginx:stable-alpine
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - printscript-ui
+      - snippet-service
+    restart: unless-stopped
+
+  printscript-ui:
+    image: ghcr.io/ingsis-2026/printscript-ui:${IMAGE_TAG}
+    restart: unless-stopped
+
+  snippet-service:
+    image: ghcr.io/ingsis-2026/snippet-service:${IMAGE_TAG}
+    environment:
+      DB_HOST: snippet-db
+      DB_PORT: 5432
+      DB_NAME: ${SNIPPET_DB_NAME}
+      DB_USER: ${SNIPPET_DB_USER}
+      DB_PASSWORD: ${SNIPPET_DB_PASSWORD}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      AUTH0_ISSUER_URI: ${AUTH0_ISSUER_URI}
+      AUTH0_AUDIENCE: ${AUTH0_AUDIENCE}
+      PERMISSION_URL: http://permission-service:8080
+      LANGUAGE_URL: http://language-service:8080
+      ASSET_URL: http://asset-service:8080
+    depends_on:
+      snippet-db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  snippet-db:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: ${SNIPPET_DB_NAME}
+      POSTGRES_USER: ${SNIPPET_DB_USER}
+      POSTGRES_PASSWORD: ${SNIPPET_DB_PASSWORD}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - snippet-data:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}" ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  permission-service:
+    image: ghcr.io/ingsis-2026/permission-service:${IMAGE_TAG}
+    environment:
+      SERVER_PORT: 8080
+      DB_HOST: permission-db
+      DB_PORT: 5432
+      DB_NAME: ${PERMISSION_DB_NAME}
+      DB_USER: ${PERMISSION_DB_USER}
+      DB_PASSWORD: ${PERMISSION_DB_PASSWORD}
+    depends_on:
+      permission-db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  permission-db:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: ${PERMISSION_DB_NAME}
+      POSTGRES_USER: ${PERMISSION_DB_USER}
+      POSTGRES_PASSWORD: ${PERMISSION_DB_PASSWORD}
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - permission-data:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}" ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  language-service:
+    image: ghcr.io/ingsis-2026/language-service:${IMAGE_TAG}
+    environment:
+      SERVER_PORT: 8080
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  # Provisto por la cátedra (austral-ingsis/asset-service): guarda el contenido de los snippets.
+  asset-service:
+    image: ghcr.io/austral-ingsis/snippet-asset-service:latest
+    environment:
+      AZURE_HOST: http://azurite
+      NEW_RELIC_AGENT_ENABLED: "false"
+    ports:
+      - "127.0.0.1:8083:8080"
+    depends_on:
+      - azurite
+    restart: unless-stopped
+
+  azurite:
+    image: mcr.microsoft.com/azure-storage/azurite
+    hostname: azurite
+    volumes:
+      - asset-data:/workspace
+    restart: unless-stopped
+
+volumes:
+  snippet-data:
+  permission-data:
+  redis-data:
+  asset-data:
