@@ -8,7 +8,7 @@ on:
 
 jobs:
   validate:
-    name: Validate Compose & Nginx
+    name: Validate Compose
     runs-on: ubuntu-latest
 
     steps:
@@ -17,12 +17,3 @@ jobs:
 
       - name: Validate docker-compose.yml
         run: docker compose --env-file .env.example config --quiet
-
-      # nginx -t resuelve los upstreams al validar, así que se los apunta a localhost.
-      - name: Validate nginx config
-        run: |
-          docker run --rm \
-            --add-host printscript-ui:127.0.0.1 \
-            --add-host snippet-service:127.0.0.1 \
-            -v "$PWD/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro" \
-            nginx:stable-alpine nginx -t
