@@ -1,13 +1,13 @@
 # Snippet Searcher: todos los servicios y sus bases de datos en un solo compose.
 # Las imágenes de los servicios las publica el CD de cada repo en ghcr.io/ingsis-2026, a partir de su Dockerfile.
-# IMAGE_TAG (en el .env) elige cuáles se levantan: dev o prod.
+# IMAGE_TAG (en el .env) elige cuáles se levantan: dev o prod. Si un puerto ya está ocupado en tu máquina, cambialo en el .env.
 
 services:
 
   snippet-service:
     image: ghcr.io/ingsis-2026/snippet-service:${IMAGE_TAG}
     ports:
-      - "8080:8080"
+      - "${SNIPPET_SERVICE_PORT:-8080}:8080"
     environment:
       DB_HOST: snippet-db
       DB_PORT: 5432
@@ -41,7 +41,7 @@ services:
   permission-service:
     image: ghcr.io/ingsis-2026/permission-service:${IMAGE_TAG}
     ports:
-      - "8081:8080"
+      - "${PERMISSION_SERVICE_PORT:-8081}:8080"
     environment:
       SERVER_PORT: 8080
       DB_HOST: permission-db
@@ -74,7 +74,7 @@ services:
   language-service:
     image: ghcr.io/ingsis-2026/language-service:${IMAGE_TAG}
     ports:
-      - "8082:8080"
+      - "${LANGUAGE_SERVICE_PORT:-8082}:8080"
     environment:
       SERVER_PORT: 8080
     restart: unless-stopped
