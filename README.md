@@ -27,6 +27,55 @@ Para trabajar en un servicio desde el IDE, levantá solo su base (por ejemplo `d
 
 El health check de cada servicio está en `/actuator/health`, por ejemplo http://localhost:8080/actuator/health.
 
-## CI
+## Entornos y ramas
 
-`ci.yml` valida que `docker-compose.yml` sea correcto en cada push y PR.
+| Rama | Entorno | Imágenes | VM |
+|---|---|---|---|
+| `dev` | dev | `:dev` | VM de dev |
+| `main` | prod | `:prod` | VM de prod |
+
+Se trabaja en ramas `feat/*` que entran a `dev` por PR. Lo que llega a `dev` se despliega en la VM de dev; cuando está probado, un PR de `dev` a `main` lo lleva a prod. Cada imagen además se etiqueta con su commit (`:sha-xxxxxxxx`).
+
+## Despliegue en las VMs (Docker Swarm)
+
+Cada VM es un Swarm de un solo nodo (manager) que corre el stack `snippet`, definido en `docker-stack.yml`. Es el mismo sistema que el compose, con estas diferencias:
+- Las bases no publican puertos.
+- Solo `snippet-service` queda expuesto, en el `8080`.
+- Swarm reinicia lo que se cae.
+- Si una imagen nueva no arranca, Swarm vuelve sola a la anterior.
+
+En la VM, una sola vez:
+
+```sh
+docker swarm init --advertise-addr <IP privada de la VM>
+docker login ghcr.io -u <usuario de GitHub>   # con un PAT con read:packages
+mkdir -p ~/snippet-searcher                    # ahí va el .env de ese entorno (IMAGE_TAG=dev o prod)
+```
+
+Después despliega CI/CD:
+- **`infra`:** `deploy.yml` copia `docker-stack.yml` y `deploy.sh` a `~/snippet-searcher` y corre `deploy.sh`.
+- **Cada servicio:** su CD actualiza solo su servicio con `docker service update --image ...:sha-xxxxxxxx`.
+
+Para revisar el stack desde la VM:
+
+```sh
+docker stack services snippet               # réplicas de cada servicio
+docker service ps snippet_snippet-service   # tareas, imagen y errores
+docker service logs -f snippet_snippet-service
+```
+
+Para llegar a la API sin abrir el puerto en Azure, usá un túnel SSH y entrá a http://localhost:18080/actuator/health:
+
+```sh
+ssh -N -L 127.0.0.1:18080:localhost:8080 <usuario>@<IP de la VM>
+```
+
+## CI/CD
+
+- `ci.yml` valida en cada push y PR:
+  - `docker-compose.yml`
+  - `docker-stack.yml`
+  - `deploy.sh`, con shellcheck
+- `deploy.yml` despliega el stack en la VM del entorno cuando CI pasa en un push a `dev` o `main`.
+  - Está apagado hasta que la variable `DEPLOY_ENABLED` valga `true`.
+  - Usa los secretos `SSH_HOST`, `SSH_USERNAME` y `SSH_KEY` de los environments `dev` y `prod`.

@@ -1,0 +1,41 @@
+name: Deploy
+
+# Corre solo cuando CI terminó bien sobre un push a main o dev. main despliega a prod y dev a dev.
+# Cada VM es un Swarm de un nodo con su propio .env en ~/snippet-searcher; acá solo copiamos el stack y lo aplicamos.
+# Apagado hasta que existan las VMs: se prende con la variable DEPLOY_ENABLED=true
+# y los secretos SSH_HOST, SSH_USERNAME y SSH_KEY en los environments "dev" y "prod".
+on:
+  workflow_run:
+    workflows: [ "Continuous Integration" ]
+    types: [ completed ]
+    branches: [ "main", "dev" ]
+
+jobs:
+  deploy:
+    name: Deploy stack to VM
+    if: vars.DEPLOY_ENABLED == 'true' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.workflow_run.head_branch == 'main' && 'prod' || 'dev' }}
+
+    steps:
+      - name: Checkout the commit that passed CI
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Copy the stack to the VM
+        uses: appleboy/scp-action@v1
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USERNAME }}
+          key: ${{ secrets.SSH_KEY }}
+          source: "docker-stack.yml,deploy.sh"
+          target: "~/snippet-searcher"
+
+      - name: Deploy the stack
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USERNAME }}
+          key: ${{ secrets.SSH_KEY }}
+          script: sh ~/snippet-searcher/deploy.sh
