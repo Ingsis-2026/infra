@@ -1,4 +1,4 @@
-# Snippet Searcher: todos los servicios y sus bases de datos en un solo compose.
+# Snippet Searcher: todos los servicios, sus bases de datos y Azurite en un solo compose.
 # Las imágenes de los servicios las publica el CD de cada repo en ghcr.io/ingsis-2026, a partir de su Dockerfile.
 # IMAGE_TAG (en el .env) elige cuáles se levantan: dev o prod. Si un puerto ya está ocupado en tu máquina, cambialo en el .env.
 
@@ -16,9 +16,13 @@ services:
       DB_PASSWORD: ${SNIPPET_DB_PASSWORD}
       PERMISSION_URL: http://permission-service:8080
       LANGUAGE_URL: http://language-service:8080
+      # La cuenta de desarrollo que trae Azurite: es pública, está en su documentación.
+      BLOB_CONNECTION_STRING: "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://azurite:10000/devstoreaccount1;"
     depends_on:
       snippet-db:
         condition: service_healthy
+      azurite:
+        condition: service_started
     restart: unless-stopped
 
   snippet-db:
@@ -36,6 +40,17 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    restart: unless-stopped
+
+  # Emulador de Azure Blob Storage: guarda el código de los snippets. Solo el servicio de blobs,
+  # escuchando en 0.0.0.0 para que se llegue desde los otros containers.
+  azurite:
+    image: mcr.microsoft.com/azure-storage/azurite
+    command: azurite-blob --blobHost 0.0.0.0 --blobPort 10000 --location /data
+    ports:
+      - "10000:10000"
+    volumes:
+      - azurite-data:/data
     restart: unless-stopped
 
   permission-service:
@@ -82,3 +97,4 @@ services:
 volumes:
   snippet-data:
   permission-data:
+  azurite-data:

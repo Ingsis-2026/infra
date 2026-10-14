@@ -17,3 +17,14 @@ jobs:
 
       - name: Validate docker-compose.yml
         run: docker compose --env-file .env.example config --quiet
+
+      # docker stack deploy no lee el .env, así que lo exportamos igual que deploy.sh en la VM.
+      - name: Validate docker-stack.yml
+        run: |
+          set -a
+          . ./.env.example
+          set +a
+          docker stack config -c docker-stack.yml > /dev/null
+
+      - name: Lint deploy.sh
+        run: shellcheck deploy.sh
