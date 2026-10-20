@@ -1,0 +1,107 @@
+# Snippet Searcher en Docker Swarm: el mismo sistema que docker-compose.yml, pero para las VMs.
+# Se despliega con deploy.sh, que carga el .env de la VM (docker stack deploy no lo lee solo).
+# Diferencias con el compose: sin depends_on ni restart (Swarm reinicia lo que falla con restart_policy),
+# las bases no publican puertos y solo snippet-service queda expuesto hacia afuera.
+
+x-service-deploy: &service-deploy
+  replicas: 1
+  restart_policy:
+    condition: on-failure
+  # Levanta la tarea nueva antes de bajar la vieja; si la nueva no arranca, vuelve a la imagen anterior.
+  update_config:
+    order: start-first
+    monitor: 60s
+    failure_action: rollback
+  resources:
+    limits:
+      memory: 768M
+
+x-db-deploy: &db-deploy
+  replicas: 1
+  restart_policy:
+    condition: on-failure
+  # Los volúmenes son locales al nodo: la base tiene que correr siempre en el mismo.
+  placement:
+    constraints: [ node.role == manager ]
+  resources:
+    limits:
+      memory: 512M
+
+services:
+
+  snippet-service:
+    image: ghcr.io/ingsis-2026/snippet-service:${IMAGE_TAG}
+    ports:
+      - "${SNIPPET_SERVICE_PORT:-8080}:8080"
+    environment:
+      JAVA_TOOL_OPTIONS: -XX:MaxRAMPercentage=75
+      DB_HOST: snippet-db
+      DB_PORT: 5432
+      DB_NAME: ${SNIPPET_DB_NAME}
+      DB_USER: ${SNIPPET_DB_USER}
+      DB_PASSWORD: ${SNIPPET_DB_PASSWORD}
+      PERMISSION_URL: http://permission-service:8080
+      LANGUAGE_URL: http://language-service:8080
+    networks: [ snippet-net ]
+    deploy: *service-deploy
+
+  snippet-db:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: ${SNIPPET_DB_NAME}
+      POSTGRES_USER: ${SNIPPET_DB_USER}
+      POSTGRES_PASSWORD: ${SNIPPET_DB_PASSWORD}
+    volumes:
+      - snippet-data:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}" ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks: [ snippet-net ]
+    deploy: *db-deploy
+
+  permission-service:
+    image: ghcr.io/ingsis-2026/permission-service:${IMAGE_TAG}
+    environment:
+      JAVA_TOOL_OPTIONS: -XX:MaxRAMPercentage=75
+      SERVER_PORT: 8080
+      DB_HOST: permission-db
+      DB_PORT: 5432
+      DB_NAME: ${PERMISSION_DB_NAME}
+      DB_USER: ${PERMISSION_DB_USER}
+      DB_PASSWORD: ${PERMISSION_DB_PASSWORD}
+    networks: [ snippet-net ]
+    deploy: *service-deploy
+
+  permission-db:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: ${PERMISSION_DB_NAME}
+      POSTGRES_USER: ${PERMISSION_DB_USER}
+      POSTGRES_PASSWORD: ${PERMISSION_DB_PASSWORD}
+    volumes:
+      - permission-data:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}" ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks: [ snippet-net ]
+    deploy: *db-deploy
+
+  language-service:
+    image: ghcr.io/ingsis-2026/language-service:${IMAGE_TAG}
+    environment:
+      JAVA_TOOL_OPTIONS: -XX:MaxRAMPercentage=75
+      SERVER_PORT: 8080
+    networks: [ snippet-net ]
+    deploy: *service-deploy
+
+networks:
+  snippet-net:
+    driver: overlay
+
+volumes:
+  snippet-data:
+  permission-data:
