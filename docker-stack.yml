@@ -1,7 +1,7 @@
 # Snippet Searcher en Docker Swarm: el mismo sistema que docker-compose.yml, pero para las VMs.
 # Se despliega con deploy.sh, que carga el .env de la VM (docker stack deploy no lo lee solo).
 # Diferencias con el compose: sin depends_on ni restart (Swarm reinicia lo que falla con restart_policy),
-# las bases no publican puertos y solo snippet-service queda expuesto hacia afuera.
+# las bases y Azurite no publican puertos y solo snippet-service queda expuesto hacia afuera.
 
 x-service-deploy: &service-deploy
   replicas: 1
@@ -42,6 +42,8 @@ services:
       DB_PASSWORD: ${SNIPPET_DB_PASSWORD}
       PERMISSION_URL: http://permission-service:8080
       LANGUAGE_URL: http://language-service:8080
+      # La cuenta de desarrollo que trae Azurite: es pública, pero Azurite no sale de la red del stack.
+      BLOB_CONNECTION_STRING: "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://azurite:10000/devstoreaccount1;"
     networks: [ snippet-net ]
     deploy: *service-deploy
 
@@ -58,6 +60,15 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    networks: [ snippet-net ]
+    deploy: *db-deploy
+
+  # El código de los snippets. Sin "ports": solo se llega desde snippet-net, como a las bases.
+  azurite:
+    image: mcr.microsoft.com/azure-storage/azurite
+    command: azurite-blob --blobHost 0.0.0.0 --blobPort 10000 --location /data
+    volumes:
+      - azurite-data:/data
     networks: [ snippet-net ]
     deploy: *db-deploy
 
@@ -105,3 +116,4 @@ networks:
 volumes:
   snippet-data:
   permission-data:
+  azurite-data:

@@ -1,6 +1,6 @@
 # infra
 
-Levanta **Snippet Searcher** entero con Docker Compose: los tres servicios y sus bases de datos.
+Levanta **Snippet Searcher** entero con Docker Compose: los tres servicios, sus bases de datos y Azurite.
 
 | Container | Imagen | Puerto en tu máquina |
 |---|---|---|
@@ -9,6 +9,9 @@ Levanta **Snippet Searcher** entero con Docker Compose: los tres servicios y sus
 | `permission-service` | `ghcr.io/ingsis-2026/permission-service` | `8081` |
 | `permission-db` | `postgres:17` | `5433` |
 | `language-service` | `ghcr.io/ingsis-2026/language-service` | `8082` |
+| `azurite` | `mcr.microsoft.com/azure-storage/azurite` | `10000` |
+
+Azurite es el emulador de Azure Blob Storage. Ahí guarda `snippet-service` el código de cada snippet; la metadata queda en `snippet-db`. Usa la cuenta de desarrollo que trae Azurite (`devstoreaccount1`), que es pública.
 
 Cada servicio tiene su propio `Dockerfile` en su repo. El CD de cada uno construye la imagen y la publica en `ghcr.io/ingsis-2026`, y este compose la baja de ahí. Adentro de la red de Docker, los servicios se llaman por nombre (por ejemplo `http://permission-service:8080`).
 
@@ -23,7 +26,7 @@ docker compose stop         # apaga todo sin perder los datos de las bases
 docker compose down -v      # borra todo, incluidos los datos
 ```
 
-Para trabajar en un servicio desde el IDE, levantá solo su base (por ejemplo `docker compose up -d snippet-db`) y corré el servicio con `./gradlew bootRun`. Los valores de `.env.example` coinciden con los defaults de cada servicio, así que no hace falta configurar nada.
+Para trabajar en un servicio desde el IDE, levantá solo lo que necesita (por ejemplo `docker compose up -d snippet-db azurite`) y corré el servicio con `./gradlew bootRun`. Los valores de `.env.example` coinciden con los defaults de cada servicio, así que no hace falta configurar nada.
 
 El health check de cada servicio está en `/actuator/health`, por ejemplo http://localhost:8080/actuator/health.
 
@@ -39,7 +42,7 @@ Se trabaja en ramas `feat/*` que entran a `dev` por PR. Lo que llega a `dev` se 
 ## Despliegue en las VMs (Docker Swarm)
 
 Cada VM es un Swarm de un solo nodo (manager) que corre el stack `snippet`, definido en `docker-stack.yml`. Es el mismo sistema que el compose, con estas diferencias:
-- Las bases no publican puertos.
+- Las bases y Azurite no publican puertos: solo se llega a ellos desde adentro del stack.
 - Solo `snippet-service` queda expuesto, en el `8080`.
 - Swarm reinicia lo que se cae.
 - Si una imagen nueva no arranca, Swarm vuelve sola a la anterior.
@@ -55,6 +58,8 @@ mkdir -p ~/snippet-searcher                    # ahí va el .env de ese entorno 
 Después despliega CI/CD:
 - **`infra`:** `deploy.yml` copia `docker-stack.yml` y `deploy.sh` a `~/snippet-searcher` y corre `deploy.sh`.
 - **Cada servicio:** su CD actualiza solo su servicio con `docker service update --image ...:sha-xxxxxxxx`.
+
+Azurite no necesita nada en la VM: la imagen es pública, su volumen se crea solo y el container de los snippets lo crea `snippet-service` con el primer guardado.
 
 Para revisar el stack desde la VM:
 
