@@ -10,10 +10,38 @@ on:
     types: [ completed ]
     branches: [ "main", "dev" ]
 
+# Un run a la vez por rama: si se mergean varios PRs seguidos, esperan en fila en vez de pisarse.
+concurrency:
+  group: deploy-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: false
+
 jobs:
+  # Si mientras corría CI llegó otro commit a la rama, este ya quedó viejo: lo despliega el CD de ese commit.
+  # Así un run que termina tarde nunca pisa uno más nuevo.
+  latest:
+    name: Check it is the branch's latest commit
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      is_latest: ${{ steps.check.outputs.is_latest }}
+
+    steps:
+      - name: Compare with the branch tip
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ github.event.workflow_run.head_branch }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          TIP=$(gh api "repos/$GITHUB_REPOSITORY/branches/$BRANCH" --jq .commit.sha)
+          if [ "$TIP" = "$SHA" ]; then echo "is_latest=true" >> "$GITHUB_OUTPUT"; else echo "is_latest=false" >> "$GITHUB_OUTPUT"; echo "Skipping: $BRANCH is already at ${TIP::8}"; fi
+
   deploy:
     name: Deploy stack to VM
-    if: vars.DEPLOY_ENABLED == 'true' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'
+    needs: latest
+    if: vars.DEPLOY_ENABLED == 'true' && needs.latest.outputs.is_latest == 'true'
     runs-on: ubuntu-latest
     environment: ${{ github.event.workflow_run.head_branch == 'main' && 'prod' || 'dev' }}
 
