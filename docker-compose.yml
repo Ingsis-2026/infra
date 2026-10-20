@@ -1,5 +1,5 @@
-# Snippet Searcher: todos los servicios, sus bases de datos, Azurite y Redis en un solo compose.
-# Las imágenes de los servicios las publica el CD de cada repo en ghcr.io/ingsis-2026, a partir de su Dockerfile.
+# Snippet Searcher: todos los servicios, sus bases de datos, el asset-service de la cátedra, Azurite y Redis en un solo compose.
+# Las imágenes de nuestros servicios las publica el CD de cada repo en ghcr.io/ingsis-2026, a partir de su Dockerfile.
 # IMAGE_TAG (en el .env) elige cuáles se levantan: dev o prod. Si un puerto ya está ocupado en tu máquina, cambialo en el .env.
 
 services:
@@ -16,14 +16,13 @@ services:
       DB_PASSWORD: ${SNIPPET_DB_PASSWORD}
       PERMISSION_URL: http://permission-service:8080
       LANGUAGE_URL: http://language-service:8080
-      # La cuenta de desarrollo que trae Azurite: es pública, está en su documentación.
-      BLOB_CONNECTION_STRING: "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://azurite:10000/devstoreaccount1;"
+      ASSET_URL: http://asset-service:8080
       REDIS_HOST: redis
       REDIS_PORT: 6379
     depends_on:
       snippet-db:
         condition: service_healthy
-      azurite:
+      asset-service:
         condition: service_started
       redis:
         condition: service_started
@@ -46,8 +45,24 @@ services:
       retries: 10
     restart: unless-stopped
 
-  # Emulador de Azure Blob Storage: guarda el código de los snippets. Solo el servicio de blobs,
-  # escuchando en 0.0.0.0 para que se llegue desde los otros containers.
+  # El asset-service de la cátedra: guarda el código de los snippets en Azurite. snippet-service le
+  # habla por HTTP y es el único que habla con Azurite. Escucha en el 8080; su health está en el 9090.
+  # La imagen no es nuestra: la publica austral-ingsis y no tiene tags dev/prod, solo latest.
+  asset-service:
+    image: ghcr.io/austral-ingsis/snippet-asset-service:latest
+    ports:
+      - "${ASSET_SERVICE_PORT:-8083}:8080"
+    environment:
+      AZURE_HOST: http://azurite
+      # La imagen arranca con el agente de New Relic; sin licencia, apagado.
+      NEW_RELIC_AGENT_ENABLED: "false"
+    depends_on:
+      azurite:
+        condition: service_started
+    restart: unless-stopped
+
+  # Emulador de Azure Blob Storage: ahí guarda asset-service el código de los snippets. Solo el
+  # servicio de blobs, escuchando en 0.0.0.0 para que se llegue desde los otros containers.
   azurite:
     image: mcr.microsoft.com/azure-storage/azurite
     command: azurite-blob --blobHost 0.0.0.0 --blobPort 10000 --location /data
