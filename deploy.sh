@@ -6,6 +6,7 @@ cd "$(dirname "$0")"
 
 # docker stack deploy no lee el .env: lo exportamos para que reemplace las ${VARIABLES} del stack.
 set -a
+# shellcheck source=/dev/null
 . ./.env
 set +a
 
