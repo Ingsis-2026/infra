@@ -1,6 +1,6 @@
 # infra
 
-Levanta **Snippet Searcher** entero con Docker Compose: los tres servicios, sus bases de datos, Azurite y Redis.
+Levanta **Snippet Searcher** entero con Docker Compose: los tres servicios, sus bases de datos, el asset-service de la cátedra con su Azurite, y Redis.
 
 | Container | Imagen | Puerto en tu máquina |
 |---|---|---|
@@ -9,10 +9,11 @@ Levanta **Snippet Searcher** entero con Docker Compose: los tres servicios, sus 
 | `permission-service` | `ghcr.io/ingsis-2026/permission-service` | `8081` |
 | `permission-db` | `postgres:17` | `5433` |
 | `language-service` | `ghcr.io/ingsis-2026/language-service` | `8082` |
+| `asset-service` | `ghcr.io/austral-ingsis/snippet-asset-service` | `8083` |
 | `azurite` | `mcr.microsoft.com/azure-storage/azurite` | `10000` |
 | `redis` | `redis:7` | `6379` |
 
-Azurite es el emulador de Azure Blob Storage. Ahí guarda `snippet-service` el código de cada snippet; la metadata queda en `snippet-db`. Usa la cuenta de desarrollo que trae Azurite (`devstoreaccount1`), que es pública.
+El código de cada snippet lo guarda `snippet-service` en `asset-service`, el [servicio de assets de la cátedra](https://github.com/austral-ingsis/asset-service), y la metadata queda en `snippet-db`. `asset-service` es el único que habla con Azurite, el emulador de Azure Blob Storage, con la cuenta de desarrollo que trae Azurite (`devstoreaccount1`), que es pública. Su imagen no es nuestra: no tiene tags `dev`/`prod`, solo `latest`. Su API está en http://localhost:8083/swagger-ui.
 
 Redis tiene el stream `lint-requests`: cuando un usuario cambia sus reglas de lint, `snippet-service` encola ahí cada uno de sus snippets y los lintea en segundo plano (US15). Corre con AOF (`--appendonly yes`) para que lo encolado sobreviva a un reinicio.
 
@@ -29,7 +30,7 @@ docker compose stop         # apaga todo sin perder los datos de las bases
 docker compose down -v      # borra todo, incluidos los datos
 ```
 
-Para trabajar en un servicio desde el IDE, levantá solo lo que necesita (por ejemplo `docker compose up -d snippet-db azurite redis`) y corré el servicio con `./gradlew bootRun`. Los valores de `.env.example` coinciden con los defaults de cada servicio, así que no hace falta configurar nada.
+Para trabajar en un servicio desde el IDE, levantá solo lo que necesita (por ejemplo `docker compose up -d snippet-db asset-service redis`) y corré el servicio con `./gradlew bootRun`. Los valores de `.env.example` coinciden con los defaults de cada servicio, así que no hace falta configurar nada.
 
 El health check de cada servicio está en `/actuator/health`, por ejemplo http://localhost:8080/actuator/health.
 
@@ -45,7 +46,7 @@ Se trabaja en ramas `feat/*` que entran a `dev` por PR. Lo que llega a `dev` se 
 ## Despliegue en las VMs (Docker Swarm)
 
 Cada VM es un Swarm de un solo nodo (manager) que corre el stack `snippet`, definido en `docker-stack.yml`. Es el mismo sistema que el compose, con estas diferencias:
-- Las bases, Azurite y Redis no publican puertos: solo se llega a ellos desde adentro del stack.
+- Las bases, `asset-service`, Azurite y Redis no publican puertos: solo se llega a ellos desde adentro del stack. `asset-service` no tiene autenticación, así que no puede quedar expuesto.
 - Solo `snippet-service` queda expuesto, en el `8080`.
 - Swarm reinicia lo que se cae.
 - Si una imagen nueva no arranca, Swarm vuelve sola a la anterior.
@@ -62,7 +63,7 @@ Después despliega CI/CD:
 - **`infra`:** `deploy.yml` copia `docker-stack.yml` y `deploy.sh` a `~/snippet-searcher` y corre `deploy.sh`.
 - **Cada servicio:** su CD actualiza solo su servicio con `docker service update --image ...:sha-xxxxxxxx`.
 
-Azurite no necesita nada en la VM: la imagen es pública, su volumen se crea solo y el container de los snippets lo crea `snippet-service` con el primer guardado. Redis tampoco: el stream y su consumer group los crea `snippet-service`.
+Azurite no necesita nada en la VM: la imagen es pública, su volumen se crea solo y el container de los snippets lo crea `asset-service` con el primer guardado. Redis tampoco: el stream y su consumer group los crea `snippet-service`.
 
 Para revisar el stack desde la VM:
 
