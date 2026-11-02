@@ -1,4 +1,4 @@
-# Snippet Searcher: todos los servicios, sus bases de datos y Azurite en un solo compose.
+# Snippet Searcher: todos los servicios, sus bases de datos, Azurite y Redis en un solo compose.
 # Las imágenes de los servicios las publica el CD de cada repo en ghcr.io/ingsis-2026, a partir de su Dockerfile.
 # IMAGE_TAG (en el .env) elige cuáles se levantan: dev o prod. Si un puerto ya está ocupado en tu máquina, cambialo en el .env.
 
@@ -18,10 +18,14 @@ services:
       LANGUAGE_URL: http://language-service:8080
       # La cuenta de desarrollo que trae Azurite: es pública, está en su documentación.
       BLOB_CONNECTION_STRING: "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://azurite:10000/devstoreaccount1;"
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
     depends_on:
       snippet-db:
         condition: service_healthy
       azurite:
+        condition: service_started
+      redis:
         condition: service_started
     restart: unless-stopped
 
@@ -51,6 +55,17 @@ services:
       - "10000:10000"
     volumes:
       - azurite-data:/data
+    restart: unless-stopped
+
+  # La cola de snippets a lintear (US15): un stream que escribe y lee snippet-service. Con AOF,
+  # para que lo encolado y todavía no procesado sobreviva a un reinicio.
+  redis:
+    image: redis:7
+    command: redis-server --appendonly yes
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
     restart: unless-stopped
 
   permission-service:
@@ -98,3 +113,4 @@ volumes:
   snippet-data:
   permission-data:
   azurite-data:
+  redis-data:

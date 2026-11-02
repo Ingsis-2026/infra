@@ -1,7 +1,7 @@
 # Snippet Searcher en Docker Swarm: el mismo sistema que docker-compose.yml, pero para las VMs.
 # Se despliega con deploy.sh, que carga el .env de la VM (docker stack deploy no lo lee solo).
 # Diferencias con el compose: sin depends_on ni restart (Swarm reinicia lo que falla con restart_policy),
-# las bases y Azurite no publican puertos y solo snippet-service queda expuesto hacia afuera.
+# las bases, Azurite y Redis no publican puertos y solo snippet-service queda expuesto hacia afuera.
 
 x-service-deploy: &service-deploy
   replicas: 1
@@ -44,6 +44,8 @@ services:
       LANGUAGE_URL: http://language-service:8080
       # La cuenta de desarrollo que trae Azurite: es pública, pero Azurite no sale de la red del stack.
       BLOB_CONNECTION_STRING: "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://azurite:10000/devstoreaccount1;"
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
     networks: [ snippet-net ]
     deploy: *service-deploy
 
@@ -69,6 +71,16 @@ services:
     command: azurite-blob --blobHost 0.0.0.0 --blobPort 10000 --location /data
     volumes:
       - azurite-data:/data
+    networks: [ snippet-net ]
+    deploy: *db-deploy
+
+  # La cola de snippets a lintear (US15). Sin "ports", como las bases; con AOF y en el manager,
+  # porque lo encolado vive en un volumen local al nodo.
+  redis:
+    image: redis:7
+    command: redis-server --appendonly yes
+    volumes:
+      - redis-data:/data
     networks: [ snippet-net ]
     deploy: *db-deploy
 
@@ -117,3 +129,4 @@ volumes:
   snippet-data:
   permission-data:
   azurite-data:
+  redis-data:
