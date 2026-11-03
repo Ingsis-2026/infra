@@ -1,9 +1,11 @@
 # infra
 
-Levanta **Snippet Searcher** entero con Docker Compose: los tres servicios, sus bases de datos, el asset-service de la cátedra con su Azurite, y Redis.
+Levanta **Snippet Searcher** entero con Docker Compose: el reverse proxy, la UI, los tres servicios, sus bases de datos, el asset-service de la cátedra con su Azurite, y Redis. La aplicación se abre en http://localhost.
 
 | Container | Imagen | Puerto en tu máquina |
 |---|---|---|
+| `reverse-proxy` | `nginx:stable-alpine` | `80` (`PROXY_PORT`) |
+| `printscript-ui` | `ghcr.io/ingsis-2026/printscript-ui` | — |
 | `snippet-service` | `ghcr.io/ingsis-2026/snippet-service` | `8080` |
 | `snippet-db` | `postgres:17` | `5432` |
 | `permission-service` | `ghcr.io/ingsis-2026/permission-service` | `8081` |
@@ -18,6 +20,19 @@ El código de cada snippet lo guarda `snippet-service` en `asset-service`, el [s
 Redis tiene el stream `lint-requests`: cuando un usuario cambia sus reglas de lint, `snippet-service` encola ahí cada uno de sus snippets y los lintea en segundo plano (US15). Corre con AOF (`--appendonly yes`) para que lo encolado sobreviva a un reinicio.
 
 Cada servicio tiene su propio `Dockerfile` en su repo. El CD de cada uno construye la imagen y la publica en `ghcr.io/ingsis-2026`, y este compose la baja de ahí. Adentro de la red de Docker, los servicios se llaman por nombre (por ejemplo `http://permission-service:8080`).
+
+## Reverse proxy
+
+`reverse-proxy` es la entrada de la aplicación: un nginx que elige a qué servicio mandar cada pedido según el path, como en el [ejemplo de la cátedra](https://github.com/austral-ingsis/nginx-docker). Su configuración está en [`nginx/default.conf`](nginx/default.conf):
+
+| Path | Va a | |
+|---|---|---|
+| `/api/...` | `snippet-service:8080` | Sin el prefijo: `/api/snippets` llega como `/snippets`. |
+| todo lo demás | `printscript-ui:80` | La UI resuelve sus propias rutas. Si no responde, [una página propia](nginx/errors/no-disponible.html) en vez de la de nginx. |
+
+- La UI y la API quedan en el mismo origin, así que el navegador no aplica CORS.
+- nginx busca cada servicio en el DNS de Docker en cada pedido, no solo al arrancar: levanta aunque la UI o snippet-service todavía no estén, y los sigue encontrando si se recrean.
+- En las VMs, es el único servicio que publica un puerto. Ahí también va a terminar HTTPS.
 
 ## Uso
 
@@ -46,8 +61,8 @@ Se trabaja en ramas `feat/*` que entran a `dev` por PR. Lo que llega a `dev` se 
 ## Despliegue en las VMs (Docker Swarm)
 
 Cada VM es un Swarm de un solo nodo (manager) que corre el stack `snippet`, definido en `docker-stack.yml`. Es el mismo sistema que el compose, con estas diferencias:
-- Las bases, `asset-service`, Azurite y Redis no publican puertos: solo se llega a ellos desde adentro del stack. `asset-service` no tiene autenticación, así que no puede quedar expuesto.
-- Solo `snippet-service` queda expuesto, en el `8080`.
+- Solo `reverse-proxy` publica un puerto, el `80`: la UI y snippet-service se alcanzan a través de él, y el resto (las bases, `asset-service`, Azurite, Redis, permission-service y language-service) solo desde adentro del stack. `asset-service` no tiene autenticación, así que no puede quedar expuesto.
+- La configuración de nginx llega como [configs de Swarm](https://docs.docker.com/engine/swarm/configs/), sin montar carpetas ni construir una imagen. No se pueden cambiar: cuando cambia `nginx/default.conf` o la página de error, hay que subirle la versión al nombre del config en `docker-stack.yml` (`snippet_proxy_conf_v1` → `v2`).
 - Swarm reinicia lo que se cae.
 - Si una imagen nueva no arranca, Swarm vuelve sola a la anterior.
 
@@ -60,7 +75,7 @@ mkdir -p ~/snippet-searcher                    # ahí va el .env de ese entorno 
 ```
 
 Después despliega CI/CD:
-- **`infra`:** `deploy.yml` copia `docker-stack.yml` y `deploy.sh` a `~/snippet-searcher` y corre `deploy.sh`.
+- **`infra`:** `deploy.yml` copia `docker-stack.yml`, `deploy.sh` y la carpeta `nginx` a `~/snippet-searcher` y corre `deploy.sh`.
 - **Cada servicio:** su CD actualiza solo su servicio con `docker service update --image ...:sha-xxxxxxxx`.
 
 Azurite no necesita nada en la VM: la imagen es pública, su volumen se crea solo y el container de los snippets lo crea `asset-service` con el primer guardado. Redis tampoco: el stream y su consumer group los crea `snippet-service`.
@@ -73,10 +88,10 @@ docker service ps snippet_snippet-service   # tareas, imagen y errores
 docker service logs -f snippet_snippet-service
 ```
 
-Para llegar a la API sin abrir el puerto en Azure, usá un túnel SSH y entrá a http://localhost:18080/actuator/health:
+La aplicación se abre en `http://<IP de la VM>`, con el puerto 80 abierto en Azure. Para probarla sin abrirlo, usá un túnel SSH y entrá a http://localhost:18080 (la API en http://localhost:18080/api/actuator/health):
 
 ```sh
-ssh -N -L 127.0.0.1:18080:localhost:8080 <usuario>@<IP de la VM>
+ssh -N -L 127.0.0.1:18080:localhost:80 <usuario>@<IP de la VM>
 ```
 
 ## CI/CD

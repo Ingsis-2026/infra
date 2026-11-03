@@ -57,7 +57,7 @@ jobs:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USERNAME }}
           key: ${{ secrets.SSH_KEY }}
-          source: "docker-stack.yml,deploy.sh"
+          source: "docker-stack.yml,deploy.sh,nginx"
           target: "~/snippet-searcher"
 
       - name: Deploy the stack

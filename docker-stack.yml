@@ -1,7 +1,7 @@
 # Snippet Searcher en Docker Swarm: el mismo sistema que docker-compose.yml, pero para las VMs.
 # Se despliega con deploy.sh, que carga el .env de la VM (docker stack deploy no lo lee solo).
 # Diferencias con el compose: sin depends_on ni restart (Swarm reinicia lo que falla con restart_policy),
-# las bases, asset-service, Azurite y Redis no publican puertos y solo snippet-service queda expuesto hacia afuera.
+# y solo el reverse proxy publica un puerto: todo lo demás, incluido snippet-service, se alcanza solo desde snippet-net.
 
 x-service-deploy: &service-deploy
   replicas: 1
@@ -16,6 +16,19 @@ x-service-deploy: &service-deploy
     limits:
       memory: 768M
 
+# nginx: el reverse proxy y la UI, que solo sirve archivos.
+x-web-deploy: &web-deploy
+  replicas: 1
+  restart_policy:
+    condition: on-failure
+  update_config:
+    order: start-first
+    monitor: 30s
+    failure_action: rollback
+  resources:
+    limits:
+      memory: 128M
+
 x-db-deploy: &db-deploy
   replicas: 1
   restart_policy:
@@ -29,10 +42,31 @@ x-db-deploy: &db-deploy
 
 services:
 
+  # La única entrada desde afuera: / va a la UI y /api a snippet-service (nginx/default.conf).
+  # Su configuración llega como configs de Swarm, como en el ejemplo de la cátedra.
+  reverse-proxy:
+    image: nginx:stable-alpine
+    ports:
+      - "${PROXY_PORT:-80}:80"
+    configs:
+      - source: proxy_conf
+        target: /etc/nginx/conf.d/default.conf
+      - source: proxy_unavailable_page
+        target: /usr/share/nginx/html/errors/no-disponible.html
+    networks: [ snippet-net ]
+    deploy: *web-deploy
+
+  # La UI: su imagen ya trae su propio nginx, que sirve los archivos. Sin "ports": se llega por el proxy.
+  printscript-ui:
+    image: ghcr.io/ingsis-2026/printscript-ui:${IMAGE_TAG}
+    environment:
+      SNIPPET_SERVICE_URL: http://snippet-service:8080
+    networks: [ snippet-net ]
+    deploy: *web-deploy
+
+  # Sin "ports": desde afuera se llega por el proxy, en /api.
   snippet-service:
     image: ghcr.io/ingsis-2026/snippet-service:${IMAGE_TAG}
-    ports:
-      - "${SNIPPET_SERVICE_PORT:-8080}:8080"
     environment:
       JAVA_TOOL_OPTIONS: -XX:MaxRAMPercentage=75
       DB_HOST: snippet-db
@@ -135,6 +169,15 @@ services:
 networks:
   snippet-net:
     driver: overlay
+
+# Los configs de Swarm no se pueden cambiar: cuando cambia un archivo, se le sube la versión al nombre (v1 -> v2).
+configs:
+  proxy_conf:
+    name: snippet_proxy_conf_v1
+    file: ./nginx/default.conf
+  proxy_unavailable_page:
+    name: snippet_proxy_unavailable_page_v1
+    file: ./nginx/errors/no-disponible.html
 
 volumes:
   snippet-data:
