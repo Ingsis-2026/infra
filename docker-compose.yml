@@ -1,8 +1,25 @@
-# Snippet Searcher: todos los servicios, sus bases de datos y Azurite en un solo compose.
+# Snippet Searcher: el reverse proxy, la UI, todos los servicios, sus bases de datos y Azurite en un solo compose.
 # Las imágenes de los servicios las publica el CD de cada repo en ghcr.io/ingsis-2026, a partir de su Dockerfile.
 # IMAGE_TAG (en el .env) elige cuáles se levantan: dev o prod. Si un puerto ya está ocupado en tu máquina, cambialo en el .env.
+# En tu máquina cada servicio publica además su puerto, para probarlo o correrlo desde el IDE; en las VMs, solo el proxy.
 
 services:
+
+  # Reverse proxy, con las mismas rutas que en las VMs (nginx/locations.conf) pero solo HTTP:
+  # la UI en http://localhost y snippet-service en http://localhost/api.
+  proxy:
+    image: nginx:1.27-alpine
+    ports:
+      - "${PROXY_PORT:-80}:80"
+    volumes:
+      - ./nginx/local.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./nginx/locations.conf:/etc/nginx/snippet/locations.conf:ro
+    restart: unless-stopped
+
+  # La UI: su imagen es un nginx que sirve los archivos estáticos.
+  printscript-ui:
+    image: ghcr.io/ingsis-2026/printscript-ui:${IMAGE_TAG}
+    restart: unless-stopped
 
   snippet-service:
     image: ghcr.io/ingsis-2026/snippet-service:${IMAGE_TAG}

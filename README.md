@@ -1,9 +1,11 @@
 # infra
 
-Levanta **Snippet Searcher** entero con Docker Compose: los tres servicios, sus bases de datos y Azurite.
+Levanta **Snippet Searcher** entero con Docker Compose: el reverse proxy, la UI, los tres servicios, sus bases de datos y Azurite.
 
 | Container | Imagen | Puerto en tu máquina |
 |---|---|---|
+| `proxy` | `nginx:1.27-alpine` | `80` |
+| `printscript-ui` | `ghcr.io/ingsis-2026/printscript-ui` | — |
 | `snippet-service` | `ghcr.io/ingsis-2026/snippet-service` | `8080` |
 | `snippet-db` | `postgres:17` | `5432` |
 | `permission-service` | `ghcr.io/ingsis-2026/permission-service` | `8081` |
@@ -26,9 +28,25 @@ docker compose stop         # apaga todo sin perder los datos de las bases
 docker compose down -v      # borra todo, incluidos los datos
 ```
 
+Con todo levantado, la UI está en http://localhost y la API en http://localhost/api (por ejemplo http://localhost/api/actuator/health). Si el `80` está ocupado, cambiá `PROXY_PORT` en el `.env`.
+
 Para trabajar en un servicio desde el IDE, levantá solo lo que necesita (por ejemplo `docker compose up -d snippet-db azurite`) y corré el servicio con `./gradlew bootRun`. Los valores de `.env.example` coinciden con los defaults de cada servicio, así que no hace falta configurar nada.
 
 El health check de cada servicio está en `/actuator/health`, por ejemplo http://localhost:8080/actuator/health.
+
+## Reverse proxy (nginx)
+
+nginx es la única puerta de entrada: recibe todos los pedidos y, según la ruta, los manda a un servicio.
+
+| Ruta | Va a | |
+|---|---|---|
+| `/api/...` | `snippet-service:8080` | Sin el `/api`: `/api/snippets` llega como `/snippets`. |
+| `/...` | `printscript-ui:80` | La UI. |
+
+- Las rutas están en [`nginx/locations.conf`](nginx/locations.conf) y son las mismas en el compose y en las VMs. Lo que cambia es el `server` que las incluye: [`local.conf`](nginx/local.conf) (solo HTTP) y [`vm.conf.template`](nginx/vm.conf.template) (HTTPS con el dominio de DuckDNS).
+- `permission-service` y `language-service` no tienen ruta: solo les habla `snippet-service`, desde adentro.
+- Es un **reverse proxy, no un load balancer**: nginx elige el servicio, no la réplica. Cada nombre resuelve a la IP virtual del servicio en Swarm, y Swarm reparte entre sus réplicas.
+- La UI y la API comparten dominio, así que el browser no necesita CORS.
 
 ## Entornos y ramas
 
@@ -42,22 +60,46 @@ Se trabaja en ramas `feat/*` que entran a `dev` por PR. Lo que llega a `dev` se 
 ## Despliegue en las VMs (Docker Swarm)
 
 Cada VM es un Swarm de un solo nodo (manager) que corre el stack `snippet`, definido en `docker-stack.yml`. Es el mismo sistema que el compose, con estas diferencias:
-- Las bases y Azurite no publican puertos: solo se llega a ellos desde adentro del stack.
-- Solo `snippet-service` queda expuesto, en el `8080`.
+- **Solo el proxy publica puertos**, el `80` y el `443`. Los servicios, las bases y Azurite solo se alcanzan desde adentro del stack.
+- **HTTPS** con un certificado de Let's Encrypt para el dominio de DuckDNS. Por el `80` solo se valida el dominio; todo lo demás se redirige a HTTPS.
+- **DuckDNS** mantiene el dominio apuntando a la IP pública de la VM, aunque cambie.
 - Swarm reinicia lo que se cae.
 - Si una imagen nueva no arranca, Swarm vuelve sola a la anterior.
 
-En la VM, una sola vez:
+| Entorno | Dominio |
+|---|---|
+| dev | `https://<DUCKDNS_SUBDOMAIN de dev>.duckdns.org` |
+| prod | `https://<DUCKDNS_SUBDOMAIN de prod>.duckdns.org` |
+
+### Una sola vez
+
+1. **DuckDNS:** entrá a https://www.duckdns.org, creá un subdominio para cada entorno (por ejemplo `snippet-searcher-dev` y `snippet-searcher`) y copiá el token.
+2. **Azure:** en el grupo de seguridad de red de cada VM, permití la entrada por TCP `80` y `443` desde cualquier origen (además del `22` para SSH).
+3. **En cada VM:**
+
+   ```sh
+   docker swarm init --advertise-addr <IP privada de la VM>
+   docker login ghcr.io -u <usuario de GitHub>   # con un PAT con read:packages
+   mkdir -p ~/snippet-searcher
+   ```
+
+   y creá `~/snippet-searcher/.env` a partir de `.env.example`, con `IMAGE_TAG` (`dev` o `prod`), contraseñas fuertes para las bases, y `DUCKDNS_SUBDOMAIN` y `DUCKDNS_TOKEN` de ese entorno.
+
+### Después, CI/CD
+
+- **`infra`:** `deploy.yml` copia `docker-stack.yml`, `deploy.sh`, `certbot.sh` y `nginx/` a `~/snippet-searcher` y corre `deploy.sh`, que:
+  1. si todavía no hay certificado, deja uno autofirmado (`certbot.sh self-signed`): sin ninguno nginx no levanta el `443`;
+  2. despliega el stack;
+  3. corre `certbot.sh`, que pide el certificado a Let's Encrypt y recarga nginx. Let's Encrypt valida el dominio por el `80`, por eso se pide con nginx ya andando.
+
+  certbot es un container que corre una vez y termina: si ya hay un certificado y le faltan más de 30 días para vencer, no pide nada; si le falta menos, lo renueva.
+- **Cada servicio y la UI:** su CD actualiza solo su servicio con `docker service update --image ...:sha-xxxxxxxx`.
+
+Si el pedido a Let's Encrypt falla (por ejemplo, porque DuckDNS todavía no apunta a la VM), el deploy no falla: queda el autofirmado (el browser muestra un aviso) y se reintenta en el próximo deploy, o a mano:
 
 ```sh
-docker swarm init --advertise-addr <IP privada de la VM>
-docker login ghcr.io -u <usuario de GitHub>   # con un PAT con read:packages
-mkdir -p ~/snippet-searcher                    # ahí va el .env de ese entorno (IMAGE_TAG=dev o prod)
+sh ~/snippet-searcher/certbot.sh
 ```
-
-Después despliega CI/CD:
-- **`infra`:** `deploy.yml` copia `docker-stack.yml` y `deploy.sh` a `~/snippet-searcher` y corre `deploy.sh`.
-- **Cada servicio:** su CD actualiza solo su servicio con `docker service update --image ...:sha-xxxxxxxx`.
 
 Azurite no necesita nada en la VM: la imagen es pública, su volumen se crea solo y el container de los snippets lo crea `snippet-service` con el primer guardado.
 
@@ -67,20 +109,19 @@ Para revisar el stack desde la VM:
 docker stack services snippet               # réplicas de cada servicio
 docker service ps snippet_snippet-service   # tareas, imagen y errores
 docker service logs -f snippet_snippet-service
+docker service logs -f snippet_proxy        # los pedidos que entran y a dónde van
+docker service logs snippet_duckdns         # si DuckDNS aceptó la IP ("OK")
 ```
 
-Para llegar a la API sin abrir el puerto en Azure, usá un túnel SSH y entrá a http://localhost:18080/actuator/health:
-
-```sh
-ssh -N -L 127.0.0.1:18080:localhost:8080 <usuario>@<IP de la VM>
-```
+Y desde cualquier lado: `https://<subdominio>.duckdns.org/api/actuator/health`.
 
 ## CI/CD
 
 - `ci.yml` valida en cada push y PR:
   - `docker-compose.yml`
   - `docker-stack.yml`
-  - `deploy.sh`, con shellcheck
+  - `deploy.sh` y `certbot.sh`, con shellcheck
+  - la config de nginx del compose y la de las VMs, con `nginx -t`
 - `deploy.yml` despliega el stack en la VM del entorno cuando CI pasa en un push a `dev` o `main`.
   - Está apagado hasta que la variable `DEPLOY_ENABLED` valga `true`.
   - Usa los secretos `SSH_HOST`, `SSH_USERNAME` y `SSH_KEY` de los environments `dev` y `prod`.
