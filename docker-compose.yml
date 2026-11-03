@@ -19,6 +19,9 @@ services:
       ASSET_URL: http://asset-service:8080
       REDIS_HOST: redis
       REDIS_PORT: 6379
+      # La aplicación machine-to-machine de Auth0 para buscar con quién compartir (US7). Salen del .env.
+      AUTH0_M2M_CLIENT_ID: ${AUTH0_M2M_CLIENT_ID:-}
+      AUTH0_M2M_CLIENT_SECRET: ${AUTH0_M2M_CLIENT_SECRET:-}
     depends_on:
       snippet-db:
         condition: service_healthy
