@@ -1,6 +1,6 @@
 # infra
 
-Levanta **Snippet Searcher** entero con Docker Compose: el reverse proxy, la UI, los tres servicios, sus bases de datos y Azurite.
+Levanta **Snippet Searcher** entero con Docker Compose: el reverse proxy, la UI, los tres servicios, sus bases de datos, el asset-service de la cátedra con su Azurite, y Redis.
 
 | Container | Imagen | Puerto en tu máquina |
 |---|---|---|
@@ -11,9 +11,13 @@ Levanta **Snippet Searcher** entero con Docker Compose: el reverse proxy, la UI,
 | `permission-service` | `ghcr.io/ingsis-2026/permission-service` | `8081` |
 | `permission-db` | `postgres:17` | `5433` |
 | `language-service` | `ghcr.io/ingsis-2026/language-service` | `8082` |
+| `asset-service` | `ghcr.io/austral-ingsis/snippet-asset-service` | `8083` |
 | `azurite` | `mcr.microsoft.com/azure-storage/azurite` | `10000` |
+| `redis` | `redis:7` | `6379` |
 
-Azurite es el emulador de Azure Blob Storage. Ahí guarda `snippet-service` el código de cada snippet; la metadata queda en `snippet-db`. Usa la cuenta de desarrollo que trae Azurite (`devstoreaccount1`), que es pública.
+El código de cada snippet lo guarda `snippet-service` en `asset-service`, el [servicio de assets de la cátedra](https://github.com/austral-ingsis/asset-service), y la metadata queda en `snippet-db`. `asset-service` es el único que habla con Azurite, el emulador de Azure Blob Storage, con la cuenta de desarrollo que trae Azurite (`devstoreaccount1`), que es pública. Su imagen no es nuestra: no tiene tags `dev`/`prod`, solo `latest`. Su API está en http://localhost:8083/swagger-ui.
+
+Redis tiene el stream `lint-requests`: cuando un usuario cambia sus reglas de lint, `snippet-service` encola ahí cada uno de sus snippets y los lintea en segundo plano (US15). Corre con AOF (`--appendonly yes`) para que lo encolado sobreviva a un reinicio.
 
 Cada servicio tiene su propio `Dockerfile` en su repo. El CD de cada uno construye la imagen y la publica en `ghcr.io/ingsis-2026`, y este compose la baja de ahí. Adentro de la red de Docker, los servicios se llaman por nombre (por ejemplo `http://permission-service:8080`).
 
@@ -30,7 +34,7 @@ docker compose down -v      # borra todo, incluidos los datos
 
 Con todo levantado, la UI está en http://localhost y la API en http://localhost/api (por ejemplo http://localhost/api/actuator/health). Si el `80` está ocupado, cambiá `PROXY_PORT` en el `.env`.
 
-Para trabajar en un servicio desde el IDE, levantá solo lo que necesita (por ejemplo `docker compose up -d snippet-db azurite`) y corré el servicio con `./gradlew bootRun`. Los valores de `.env.example` coinciden con los defaults de cada servicio, así que no hace falta configurar nada.
+Para trabajar en un servicio desde el IDE, levantá solo lo que necesita (por ejemplo `docker compose up -d snippet-db asset-service redis`) y corré el servicio con `./gradlew bootRun`. Los valores de `.env.example` coinciden con los defaults de cada servicio, así que no hace falta configurar nada.
 
 El health check de cada servicio está en `/actuator/health`, por ejemplo http://localhost:8080/actuator/health.
 
@@ -60,7 +64,7 @@ Se trabaja en ramas `feat/*` que entran a `dev` por PR. Lo que llega a `dev` se 
 ## Despliegue en las VMs (Docker Swarm)
 
 Cada VM es un Swarm de un solo nodo (manager) que corre el stack `snippet`, definido en `docker-stack.yml`. Es el mismo sistema que el compose, con estas diferencias:
-- **Solo el proxy publica puertos**, el `80` y el `443`. Los servicios, las bases y Azurite solo se alcanzan desde adentro del stack.
+- **Solo el proxy publica puertos**, el `80` y el `443`. Los servicios, las bases, `asset-service`, Azurite y Redis solo se alcanzan desde adentro del stack. `asset-service` no tiene autenticación, así que no puede quedar expuesto.
 - **HTTPS** con un certificado de Let's Encrypt para el dominio de DuckDNS. Por el `80` solo se valida el dominio; todo lo demás se redirige a HTTPS.
 - **DuckDNS** mantiene el dominio apuntando a la IP pública de la VM, aunque cambie.
 - Swarm reinicia lo que se cae.
@@ -83,7 +87,7 @@ Cada VM es un Swarm de un solo nodo (manager) que corre el stack `snippet`, defi
    mkdir -p ~/snippet-searcher
    ```
 
-   y creá `~/snippet-searcher/.env` a partir de `.env.example`, con `IMAGE_TAG` (`dev` o `prod`), contraseñas fuertes para las bases, y `DUCKDNS_SUBDOMAIN` y `DUCKDNS_TOKEN` de ese entorno.
+   y creá `~/snippet-searcher/.env` a partir de `.env.example`, con `IMAGE_TAG` (`dev` o `prod`), contraseñas fuertes para las bases, `DUCKDNS_SUBDOMAIN` y `DUCKDNS_TOKEN` de ese entorno, y `AUTH0_M2M_CLIENT_ID` y `AUTH0_M2M_CLIENT_SECRET` (la aplicación machine-to-machine de Auth0 con la que snippet-service busca con quién compartir).
 
 ### Después, CI/CD
 
@@ -101,7 +105,7 @@ Si el pedido a Let's Encrypt falla (por ejemplo, porque DuckDNS todavía no apun
 sh ~/snippet-searcher/certbot.sh
 ```
 
-Azurite no necesita nada en la VM: la imagen es pública, su volumen se crea solo y el container de los snippets lo crea `snippet-service` con el primer guardado.
+Azurite no necesita nada en la VM: la imagen es pública, su volumen se crea solo y el container de los snippets lo crea `asset-service` con el primer guardado. Redis tampoco: el stream y su consumer group los crea `snippet-service`.
 
 Para revisar el stack desde la VM:
 

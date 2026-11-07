@@ -93,8 +93,12 @@ services:
       DB_PASSWORD: ${SNIPPET_DB_PASSWORD}
       PERMISSION_URL: http://permission-service:8080
       LANGUAGE_URL: http://language-service:8080
-      # La cuenta de desarrollo que trae Azurite: es pública, pero Azurite no sale de la red del stack.
-      BLOB_CONNECTION_STRING: "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://azurite:10000/devstoreaccount1;"
+      ASSET_URL: http://asset-service:8080
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      # La aplicación machine-to-machine de Auth0 para buscar con quién compartir (US7). Salen del .env.
+      AUTH0_M2M_CLIENT_ID: ${AUTH0_M2M_CLIENT_ID:-}
+      AUTH0_M2M_CLIENT_SECRET: ${AUTH0_M2M_CLIENT_SECRET:-}
     networks: [ snippet-net ]
     deploy: *service-deploy
 
@@ -114,12 +118,34 @@ services:
     networks: [ snippet-net ]
     deploy: *db-deploy
 
-  # El código de los snippets. Sin "ports": solo se llega desde snippet-net, como a las bases.
+  # El asset-service de la cátedra: guarda el código de los snippets en Azurite. Sin "ports": no
+  # tiene autenticación, así que solo se llega desde snippet-net. Su imagen solo tiene latest.
+  asset-service:
+    image: ghcr.io/austral-ingsis/snippet-asset-service:latest
+    environment:
+      JAVA_TOOL_OPTIONS: -XX:MaxRAMPercentage=75
+      AZURE_HOST: http://azurite
+      NEW_RELIC_AGENT_ENABLED: "false"
+    networks: [ snippet-net ]
+    deploy: *service-deploy
+
+  # Donde asset-service guarda el código de los snippets. Sin "ports": solo se llega desde snippet-net,
+  # como a las bases.
   azurite:
     image: mcr.microsoft.com/azure-storage/azurite
     command: azurite-blob --blobHost 0.0.0.0 --blobPort 10000 --location /data
     volumes:
       - azurite-data:/data
+    networks: [ snippet-net ]
+    deploy: *db-deploy
+
+  # La cola de snippets a lintear (US15). Sin "ports", como las bases; con AOF y en el manager,
+  # porque lo encolado vive en un volumen local al nodo.
+  redis:
+    image: redis:7
+    command: redis-server --appendonly yes
+    volumes:
+      - redis-data:/data
     networks: [ snippet-net ]
     deploy: *db-deploy
 
@@ -177,6 +203,7 @@ volumes:
   snippet-data:
   permission-data:
   azurite-data:
+  redis-data:
   # Los certificados de Let's Encrypt (los escribe certbot.sh, los lee nginx).
   letsencrypt:
   # Donde certbot.sh deja el archivo que Let's Encrypt viene a buscar por el puerto 80.
