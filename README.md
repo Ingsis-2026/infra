@@ -87,7 +87,7 @@ Cada VM es un Swarm de un solo nodo (manager) que corre el stack `snippet`, defi
    mkdir -p ~/snippet-searcher
    ```
 
-   y creá `~/snippet-searcher/.env` a partir de `.env.example`, con `IMAGE_TAG` (`dev` o `prod`), contraseñas fuertes para las bases, `DUCKDNS_SUBDOMAIN` y `DUCKDNS_TOKEN` de ese entorno, y `AUTH0_M2M_CLIENT_ID` y `AUTH0_M2M_CLIENT_SECRET` (la aplicación machine-to-machine de Auth0 con la que snippet-service busca con quién compartir).
+   y creá `~/snippet-searcher/.env` a partir de `.env.example`, con `IMAGE_TAG` (`dev` o `prod`), contraseñas fuertes para las bases, `DUCKDNS_SUBDOMAIN` y `DUCKDNS_TOKEN` de ese entorno, `AUTH0_M2M_CLIENT_ID` y `AUTH0_M2M_CLIENT_SECRET` (la aplicación machine-to-machine de Auth0 con la que snippet-service busca con quién compartir), y `NEW_RELIC_LICENSE_KEY` (ver [Observabilidad](#observabilidad-new-relic)).
 
 ### Después, CI/CD
 
@@ -118,6 +118,10 @@ docker service logs snippet_duckdns         # si DuckDNS aceptó la IP ("OK")
 ```
 
 Y desde cualquier lado: `https://<subdominio>.duckdns.org/api/actuator/health`.
+
+## Observabilidad (New Relic)
+
+En las VMs, los cuatro servicios Java (los nuestros y `asset-service`) corren con el agente de New Relic y `deploy.sh` levanta al lado del stack un `newrelic-infra` que mide la VM y cada container. Los monitores sintéticos, las alertas y el dashboard están como código en [`newrelic/`](newrelic/README.md), junto con los puntos de falla de la arquitectura y cómo probar que las alertas saltan.
 
 ## CI/CD
 

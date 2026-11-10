@@ -3,6 +3,14 @@
 # Diferencias con el compose: sin depends_on ni restart (Swarm reinicia lo que falla con restart_policy),
 # el único que publica puertos es el reverse proxy (80 y 443, con HTTPS) y DuckDNS mantiene el dominio apuntando a la VM.
 
+# El agente de New Relic de los servicios Java (los nuestros y el asset-service de la cátedra). Cada servicio agrega
+# su NEW_RELIC_APP_NAME, <servicio>-<entorno>: IMAGE_TAG es dev o prod, así cada entorno es otra aplicación en New Relic.
+# Sin NEW_RELIC_LICENSE_KEY en el .env el agente no se conecta y el servicio anda igual, sin reportar.
+x-newrelic-env: &newrelic-env
+  NEW_RELIC_AGENT_ENABLED: "true"
+  NEW_RELIC_LICENSE_KEY: ${NEW_RELIC_LICENSE_KEY:-}
+  NEW_RELIC_LABELS: env:${IMAGE_TAG};stack:snippet
+
 x-service-deploy: &service-deploy
   replicas: 1
   restart_policy:
@@ -12,9 +20,11 @@ x-service-deploy: &service-deploy
     order: start-first
     monitor: 60s
     failure_action: rollback
+  # 1 GB: el agente de New Relic suma ~100 MB fuera del heap; con 768 MB un servicio con el heap lleno
+  # quedaba al borde del límite, donde Docker lo mata (OOM) y Swarm lo reinicia.
   resources:
     limits:
-      memory: 768M
+      memory: 1G
 
 x-db-deploy: &db-deploy
   replicas: 1
@@ -85,6 +95,8 @@ services:
   snippet-service:
     image: ghcr.io/ingsis-2026/snippet-service:${IMAGE_TAG}
     environment:
+      <<: *newrelic-env
+      NEW_RELIC_APP_NAME: snippet-service-${IMAGE_TAG}
       JAVA_TOOL_OPTIONS: -XX:MaxRAMPercentage=75
       DB_HOST: snippet-db
       DB_PORT: 5432
@@ -123,9 +135,13 @@ services:
   asset-service:
     image: ghcr.io/austral-ingsis/snippet-asset-service:latest
     environment:
+      <<: *newrelic-env
+      NEW_RELIC_APP_NAME: asset-service-${IMAGE_TAG}
       JAVA_TOOL_OPTIONS: -XX:MaxRAMPercentage=75
       AZURE_HOST: http://azurite
-      NEW_RELIC_AGENT_ENABLED: "false"
+      # Por defecto loguea cada pedido a Azurite con su cuerpo: el código entero de cada snippet, que con el agente
+      # además se manda a New Relic. Con un snippet grande son megas de log por pedido. BASIC deja método, URL, status y tiempo.
+      AZURE_HTTP_LOG_LEVEL: BASIC
     networks: [ snippet-net ]
     deploy: *service-deploy
 
@@ -152,6 +168,8 @@ services:
   permission-service:
     image: ghcr.io/ingsis-2026/permission-service:${IMAGE_TAG}
     environment:
+      <<: *newrelic-env
+      NEW_RELIC_APP_NAME: permission-service-${IMAGE_TAG}
       JAVA_TOOL_OPTIONS: -XX:MaxRAMPercentage=75
       SERVER_PORT: 8080
       DB_HOST: permission-db
@@ -181,6 +199,8 @@ services:
   language-service:
     image: ghcr.io/ingsis-2026/language-service:${IMAGE_TAG}
     environment:
+      <<: *newrelic-env
+      NEW_RELIC_APP_NAME: language-service-${IMAGE_TAG}
       JAVA_TOOL_OPTIONS: -XX:MaxRAMPercentage=75
       SERVER_PORT: 8080
     networks: [ snippet-net ]
