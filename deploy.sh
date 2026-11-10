@@ -1,6 +1,10 @@
 #!/usr/bin/env sh
-# Despliega (o actualiza) el stack "snippet" en el Swarm de esta VM y después pide el certificado HTTPS.
-# Uso: sh deploy.sh <dev|prod>. Corre en la VM, en ~/snippet-searcher. Lo llama el workflow deploy.yml.
+# Despliega (o actualiza) el stack "snippet" en el Swarm de la VM y después pide el certificado HTTPS.
+# Uso: sh deploy.sh <dev|prod>. Lo llama el workflow deploy.yml.
+#
+# No corre en la VM sino en el runner (o en tu máquina), parado en este repo: cada comando de docker se ejecuta
+# en el docker de la VM a través de un docker context por SSH. Por eso a la VM no se copia ningún archivo: el
+# stack y la config de nginx los lee el cliente de docker de acá y se los manda a Swarm.
 #
 # En la VM no hay ningún .env. Lo que no es secreto sale de env/<entorno>.env, que está versionado. Lo secreto
 # son Docker Secrets: se crean acá la primera vez, con las variables que pasa el workflow desde los secretos del
@@ -53,7 +57,8 @@ ensure_secret newrelic-java-options NEW_RELIC_LICENSE_KEY \
 
 # Un config de Swarm no se puede modificar: si cambia la config de nginx, tiene que ser un config con otro nombre.
 # El nombre lleva un hash de los archivos de nginx/, así cambia solo cuando cambian ellos.
-NGINX_CONFIG_VERSION=$(cat nginx/* | sha256sum | cut -c1-12)
+# sha256sum en Linux (el runner); shasum en macOS, para un deploy a mano.
+NGINX_CONFIG_VERSION=$(cat nginx/* | { sha256sum 2> /dev/null || shasum -a 256; } | cut -c1-12)
 export NGINX_CONFIG_VERSION
 
 # nginx no arranca sin un certificado para el 443: si todavía no hay ninguno, uno autofirmado.
@@ -74,6 +79,7 @@ docker config ls -q -f name=snippet-nginx- | xargs -r docker config rm > /dev/nu
 # --privileged) y Swarm no admite ninguna de esas opciones: dentro del stack, con cgroups v2, ve la memoria de
 # todos los containers en 0. Por lo mismo no puede leer un Docker Secret: recibe la key del workflow, en este
 # deploy. Si la key no llega (un deploy a mano), el agente que ya está corriendo queda como está.
+# Los paths de -v son de la VM: los resuelve el docker de allá, no el de quien corre este script.
 if [ -n "${NEW_RELIC_LICENSE_KEY:-}" ]; then
     docker rm -f newrelic-infra > /dev/null 2>&1 || true
     docker run -d --name newrelic-infra --restart unless-stopped \
@@ -88,7 +94,7 @@ if [ -n "${NEW_RELIC_LICENSE_KEY:-}" ]; then
 fi
 
 # Si falla (por ejemplo, DuckDNS todavía no apunta a esta VM), el stack queda andando con el certificado
-# autofirmado y se reintenta en el próximo deploy, o a mano con: sh ~/snippet-searcher/certbot.sh <dev|prod>
+# autofirmado y se reintenta en el próximo deploy, o a mano con: sh certbot.sh <dev|prod> (ver el README)
 if ! sh ./certbot.sh "$env_name"; then
     echo "No se pudo conseguir el certificado de Let's Encrypt: nginx sigue con el autofirmado." >&2
 fi

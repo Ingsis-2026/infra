@@ -1,8 +1,9 @@
 name: Deploy
 
 # Corre solo cuando CI terminó bien sobre un push a main o dev. main despliega a prod y dev a dev.
-# Cada VM es un Swarm de un nodo sin ninguna configuración propia: acá copiamos el stack y lo aplicamos, y los
-# secretos del environment de GitHub llegan a deploy.sh, que la primera vez los guarda como Docker Secrets.
+# Cada VM es un Swarm de un nodo sin ninguna configuración propia. A la VM no se copia nada: deploy.sh corre acá,
+# en el runner, y su docker le habla al de la VM por SSH con un docker context. Los secretos del environment de
+# GitHub llegan a deploy.sh, que la primera vez los guarda como Docker Secrets.
 # Apagado hasta que existan las VMs: se prende con la variable DEPLOY_ENABLED=true y, en los environments "dev" y
 # "prod", los secretos SSH_HOST, SSH_USERNAME, SSH_KEY, SNIPPET_DB_PASSWORD, PERMISSION_DB_PASSWORD, DUCKDNS_TOKEN,
 # AUTH0_M2M_CLIENT_ID, AUTH0_M2M_CLIENT_SECRET y NEW_RELIC_LICENSE_KEY (y la variable opcional LETSENCRYPT_EMAIL).
@@ -53,18 +54,33 @@ jobs:
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
 
-      - name: Copy the stack to the VM
-        uses: appleboy/scp-action@v1
-        with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USERNAME }}
-          key: ${{ secrets.SSH_KEY }}
-          source: "docker-stack.yml,deploy.sh,certbot.sh,nginx,env"
-          target: "~/snippet-searcher"
+      # Un docker context: desde acá, cada comando de docker se ejecuta en el docker de la VM, por SSH (puerto 22).
+      # La VM no expone el puerto de la API de docker. El ControlMaster reusa una sola conexión SSH para todos los
+      # comandos, en vez de abrir una por cada uno.
+      - name: Point docker at the VM over SSH
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USERNAME: ${{ secrets.SSH_USERNAME }}
+          SSH_KEY: ${{ secrets.SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_vm && chmod 600 ~/.ssh/id_vm
+          ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts
+          cat >> ~/.ssh/config <<EOF
+          Host $SSH_HOST
+            IdentityFile ~/.ssh/id_vm
+            IdentitiesOnly yes
+            ControlMaster auto
+            ControlPath ~/.ssh/control-%C
+            ControlPersist 60s
+          EOF
+          docker context create vm --docker "host=ssh://$SSH_USERNAME@$SSH_HOST"
+          docker context use vm
+          # Falla acá, antes del deploy, si no se llega a la VM o si no es manager de un Swarm.
+          docker node ls
 
-      # "envs" son las variables que la action pasa por SSH al script: viajan en la sesión, no quedan en la VM.
+      # Corre en el runner contra el docker de la VM. Los secretos viajan por esa conexión y quedan solo en Swarm.
       - name: Deploy the stack
-        uses: appleboy/ssh-action@v1
         env:
           TARGET: ${{ github.event.workflow_run.head_branch == 'main' && 'prod' || 'dev' }}
           SNIPPET_DB_PASSWORD: ${{ secrets.SNIPPET_DB_PASSWORD }}
@@ -74,9 +90,4 @@ jobs:
           AUTH0_M2M_CLIENT_SECRET: ${{ secrets.AUTH0_M2M_CLIENT_SECRET }}
           NEW_RELIC_LICENSE_KEY: ${{ secrets.NEW_RELIC_LICENSE_KEY }}
           LETSENCRYPT_EMAIL: ${{ vars.LETSENCRYPT_EMAIL }}
-        with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USERNAME }}
-          key: ${{ secrets.SSH_KEY }}
-          envs: TARGET,SNIPPET_DB_PASSWORD,PERMISSION_DB_PASSWORD,DUCKDNS_TOKEN,AUTH0_M2M_CLIENT_ID,AUTH0_M2M_CLIENT_SECRET,NEW_RELIC_LICENSE_KEY,LETSENCRYPT_EMAIL
-          script: sh ~/snippet-searcher/deploy.sh "$TARGET"
+        run: sh deploy.sh "$TARGET"

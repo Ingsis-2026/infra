@@ -1,6 +1,7 @@
 #!/usr/bin/env sh
 # El certificado HTTPS de <DUCKDNS_SUBDOMAIN>.duckdns.org. certbot es un container que corre una vez y termina.
-# Corre en la VM, en ~/snippet-searcher. Lo llama deploy.sh en cada deploy, en dos pasos:
+# Como deploy.sh, corre en el runner contra el docker de la VM (un docker context). Lo llama deploy.sh en cada
+# deploy, en dos pasos:
 #
 #   sh certbot.sh <dev|prod> self-signed
 #                               antes del deploy. nginx no arranca sin un certificado para el 443, y el de
@@ -51,17 +52,24 @@ if [ "${2:-}" = "self-signed" ]; then
     exit 0
 fi
 
-# Espera a que nginx responda en el 80, que es por donde valida Let's Encrypt.
+# Espera a que nginx responda en el 80, que es por donde valida Let's Encrypt. El chequeo es un container en la
+# red de la VM (--network host), porque este script no corre en ella. Cualquier respuesta HTTP sirve.
 echo "Esperando a nginx en el puerto 80..."
-tries=0
-until curl -s -o /dev/null http://127.0.0.1/; do
-    tries=$((tries + 1))
-    if [ "$tries" -ge 30 ]; then
-        echo "nginx no responde en el puerto 80" >&2
-        exit 1
-    fi
-    sleep 2
-done
+if ! docker run --rm --network host --entrypoint python certbot/certbot:v3.0.1 -c "
+import http.client, sys, time
+for _ in range(30):
+    try:
+        connection = http.client.HTTPConnection('127.0.0.1', 80, timeout=3)
+        connection.request('GET', '/')
+        connection.getresponse()
+        sys.exit(0)
+    except Exception:
+        time.sleep(2)
+sys.exit(1)
+"; then
+    echo "nginx no responde en el puerto 80" >&2
+    exit 1
+fi
 
 # Sin renewal/<dominio>.conf, lo que hay en live/<dominio> es el autofirmado: se borra para que certbot escriba
 # el real en esa misma carpeta, que es la que lee nginx (si no, lo deja en <dominio>-0001). nginx sigue sirviendo

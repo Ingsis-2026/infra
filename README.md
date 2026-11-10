@@ -85,7 +85,7 @@ Cada VM es un Swarm de un solo nodo (manager) que corre el stack `snippet`, defi
    docker swarm init --advertise-addr <IP privada de la VM>
    ```
 
-   Nada más: en la VM no queda ninguna configuración (ni `.env`, ni `docker login`: las imágenes son públicas). Lo único propio de la VM es `~/.ssh/`, que viene con ella.
+   Nada más: en la VM no queda ninguna configuración ni ningún archivo del repo (ni el stack, ni scripts, ni `.env`, ni `docker login`: las imágenes son públicas). Lo único propio de la VM es `~/.ssh/`, que viene con ella. El deploy corre en el runner de GitHub y le habla al docker de la VM por SSH con un [docker context](https://docs.docker.com/engine/manage-resources/contexts/): la VM solo expone el `22`, el `80` y el `443`, nunca el puerto de la API de docker.
 4. **En GitHub**, en los environments `dev` y `prod` del repo: los secretos `SSH_HOST`, `SSH_USERNAME`, `SSH_KEY`, `SNIPPET_DB_PASSWORD` y `PERMISSION_DB_PASSWORD` (contraseñas fuertes), `DUCKDNS_TOKEN`, `AUTH0_M2M_CLIENT_ID` y `AUTH0_M2M_CLIENT_SECRET` (la aplicación machine-to-machine de Auth0 con la que snippet-service busca con quién compartir) y `NEW_RELIC_LICENSE_KEY` (ver [Observabilidad](#observabilidad-new-relic)). Opcional, la variable `LETSENCRYPT_EMAIL`.
 
 ### Dónde vive la configuración
@@ -97,7 +97,7 @@ Cada VM es un Swarm de un solo nodo (manager) que corre el stack `snippet`, defi
 | Contraseñas, tokens y keys | [Docker Secrets](https://docs.docker.com/engine/swarm/secrets/): Swarm los guarda cifrados y se los monta a cada servicio como un archivo en `/run/secrets` |
 | Los certificados HTTPS | un volumen de Docker, escrito por el container de certbot |
 
-Los secretos los crea `deploy.sh` la primera vez, con los valores que el workflow le pasa por SSH desde los secretos del environment de GitHub. Cada servicio lee el suyo de un archivo: postgres con `POSTGRES_PASSWORD_FILE`, DuckDNS con `FILE__TOKEN`, los servicios de Spring con `SPRING_CONFIG_IMPORT=optional:configtree:/run/secrets/` y el agente de New Relic con `JDK_JAVA_OPTIONS=@archivo`. El único que no puede es `newrelic-infra`, que corre fuera de Swarm: recibe la key en cada deploy.
+Los secretos los crea `deploy.sh` la primera vez, con los valores que el workflow le pasa desde los secretos del environment de GitHub. Cada servicio lee el suyo de un archivo: postgres con `POSTGRES_PASSWORD_FILE`, DuckDNS con `FILE__TOKEN`, los servicios de Spring con `SPRING_CONFIG_IMPORT=optional:configtree:/run/secrets/` y el agente de New Relic con `JDK_JAVA_OPTIONS=@archivo`. El único que no puede es `newrelic-infra`, que corre fuera de Swarm: recibe la key en cada deploy.
 
 **Cambiar un secreto:** un secreto de Swarm no se puede modificar y `deploy.sh` no toca los que ya existen. Para cambiar uno, cambialo en GitHub, sacalo del servicio que lo usa y borralo en la VM, y volvé a desplegar:
 
@@ -110,7 +110,7 @@ La contraseña de una base además hay que cambiarla adentro de postgres (`ALTER
 
 ### Después, CI/CD
 
-- **`infra`:** `deploy.yml` copia `docker-stack.yml`, `deploy.sh`, `certbot.sh`, `nginx/` y `env/` a `~/snippet-searcher` y corre `deploy.sh <dev|prod>`, que:
+- **`infra`:** `deploy.yml` crea un docker context que apunta a la VM por SSH y corre `deploy.sh <dev|prod>` en el runner. Cada comando de docker del script se ejecuta en la VM, y a la VM no se copia nada. `deploy.sh`:
   1. crea los Docker Secrets que falten;
   1. si todavía no hay certificado, deja uno autofirmado (`certbot.sh self-signed`): sin ninguno nginx no levanta el `443`;
   2. despliega el stack;
@@ -122,7 +122,9 @@ La contraseña de una base además hay que cambiarla adentro de postgres (`ALTER
 Si el pedido a Let's Encrypt falla (por ejemplo, porque DuckDNS todavía no apunta a la VM), el deploy no falla: queda el autofirmado (el browser muestra un aviso) y se reintenta en el próximo deploy, o a mano:
 
 ```sh
-sh ~/snippet-searcher/certbot.sh dev   # o prod
+# desde tu máquina, parado en este repo, con un context que apunte a la VM
+docker context create snippet-dev --docker "host=ssh://<usuario>@<host de la VM>"
+DOCKER_CONTEXT=snippet-dev sh certbot.sh dev   # o prod
 ```
 
 Azurite no necesita nada en la VM: la imagen es pública, su volumen se crea solo y el container de los snippets lo crea `asset-service` con el primer guardado. Redis tampoco: el stream y su consumer group los crea `snippet-service`.
