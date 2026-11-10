@@ -2,19 +2,25 @@
 # El certificado HTTPS de <DUCKDNS_SUBDOMAIN>.duckdns.org. certbot es un container que corre una vez y termina.
 # Corre en la VM, en ~/snippet-searcher. Lo llama deploy.sh en cada deploy, en dos pasos:
 #
-#   sh certbot.sh self-signed   antes del deploy. nginx no arranca sin un certificado para el 443, y el de
+#   sh certbot.sh <dev|prod> self-signed
+#                               antes del deploy. nginx no arranca sin un certificado para el 443, y el de
 #                               Let's Encrypt se pide con nginx ya andando (valida el dominio por el 80):
 #                               si todavía no hay ninguno, deja uno autofirmado en su lugar.
-#   sh certbot.sh               después del deploy. Le pide el certificado a Let's Encrypt y recarga nginx.
+#   sh certbot.sh <dev|prod>    después del deploy. Le pide el certificado a Let's Encrypt y recarga nginx.
 #                               Si ya hay uno y le faltan más de 30 días para vencer, no pide nada; si le
 #                               falta menos, lo renueva.
 set -eu
 cd "$(dirname "$0")"
 
-set -a
+# El subdominio sale de env/<entorno>.env, que está versionado. LETSENCRYPT_EMAIL es opcional y llega del workflow:
+# Let's Encrypt avisa ahí si el certificado está por vencer y no se renovó.
+env_name="${1:-}"
+if [ ! -f "env/$env_name.env" ]; then
+    echo "Uso: sh certbot.sh <dev|prod> [self-signed]" >&2
+    exit 1
+fi
 # shellcheck source=/dev/null
-. ./.env
-set +a
+. "./env/$env_name.env"
 
 domain="$DUCKDNS_SUBDOMAIN.duckdns.org"
 live="/etc/letsencrypt/live/$domain"
@@ -40,7 +46,7 @@ self_signed() {
     "
 }
 
-if [ "${1:-}" = "self-signed" ]; then
+if [ "${2:-}" = "self-signed" ]; then
     self_signed
     exit 0
 fi

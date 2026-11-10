@@ -1,14 +1,19 @@
 # Snippet Searcher en Docker Swarm: el mismo sistema que docker-compose.yml, pero para las VMs.
-# Se despliega con deploy.sh, que carga el .env de la VM (docker stack deploy no lo lee solo).
+# Se despliega con deploy.sh <dev|prod>. En la VM no queda ninguna configuración: lo que cambia entre entornos y
+# no es secreto está versionado en env/<entorno>.env, y lo secreto son Docker Secrets (al final de este archivo),
+# que Swarm guarda cifrados y le monta a cada servicio como un archivo en /run/secrets.
 # Diferencias con el compose: sin depends_on ni restart (Swarm reinicia lo que falla con restart_policy),
 # el único que publica puertos es el reverse proxy (80 y 443, con HTTPS) y DuckDNS mantiene el dominio apuntando a la VM.
 
 # El agente de New Relic de los servicios Java (los nuestros y el asset-service de la cátedra). Cada servicio agrega
 # su NEW_RELIC_APP_NAME, <servicio>-<entorno>: IMAGE_TAG es dev o prod, así cada entorno es otra aplicación en New Relic.
-# Sin NEW_RELIC_LICENSE_KEY en el .env el agente no se conecta y el servicio anda igual, sin reportar.
+# La license key no va por variable de entorno: el agente no sabe leerla de un archivo, pero el comando java sí
+# lee opciones de un archivo con JDK_JAVA_OPTIONS=@archivo. El secreto newrelic-java-options es ese archivo, con
+# -Dnewrelic.config.license_key=<key> (lo arma deploy.sh). Sirve igual para el asset-service de la cátedra, sin
+# tocar su imagen, y el log solo muestra el path del archivo, no la key.
 x-newrelic-env: &newrelic-env
   NEW_RELIC_AGENT_ENABLED: "true"
-  NEW_RELIC_LICENSE_KEY: ${NEW_RELIC_LICENSE_KEY:-}
+  JDK_JAVA_OPTIONS: "@/run/secrets/newrelic-java-options"
   NEW_RELIC_LABELS: env:${IMAGE_TAG};stack:snippet
 
 x-service-deploy: &service-deploy
@@ -82,8 +87,10 @@ services:
     image: lscr.io/linuxserver/duckdns:latest
     environment:
       SUBDOMAINS: ${DUCKDNS_SUBDOMAIN}
-      TOKEN: ${DUCKDNS_TOKEN}
+      # Las imágenes de linuxserver leen la variable TOKEN del archivo que diga FILE__TOKEN.
+      FILE__TOKEN: /run/secrets/duckdns-token
       TZ: America/Argentina/Buenos_Aires
+    secrets: [ duckdns-token ]
     deploy: *light-deploy
 
   # La UI: su imagen es un nginx que sirve los archivos estáticos. No publica puertos: se llega por el proxy.
@@ -100,26 +107,37 @@ services:
       JAVA_TOOL_OPTIONS: -XX:MaxRAMPercentage=75
       DB_HOST: snippet-db
       DB_PORT: 5432
-      DB_NAME: ${SNIPPET_DB_NAME}
-      DB_USER: ${SNIPPET_DB_USER}
-      DB_PASSWORD: ${SNIPPET_DB_PASSWORD}
+      DB_NAME: snippet
+      DB_USER: snippet
+      # Spring lee cada archivo de /run/secrets como una propiedad con el nombre del archivo: así DB_PASSWORD,
+      # AUTH0_M2M_CLIENT_ID y AUTH0_M2M_CLIENT_SECRET llegan al application.yml igual que si fueran variables.
+      SPRING_CONFIG_IMPORT: optional:configtree:/run/secrets/
       PERMISSION_URL: http://permission-service:8080
       LANGUAGE_URL: http://language-service:8080
       ASSET_URL: http://asset-service:8080
       REDIS_HOST: redis
       REDIS_PORT: 6379
-      # La aplicación machine-to-machine de Auth0 para buscar con quién compartir (US7). Salen del .env.
-      AUTH0_M2M_CLIENT_ID: ${AUTH0_M2M_CLIENT_ID:-}
-      AUTH0_M2M_CLIENT_SECRET: ${AUTH0_M2M_CLIENT_SECRET:-}
+    # "target" es el nombre del archivo en /run/secrets. Los de Auth0 son la aplicación machine-to-machine
+    # para buscar con quién compartir (US7).
+    secrets:
+      - source: snippet-db-password
+        target: DB_PASSWORD
+      - source: auth0-m2m-client-id
+        target: AUTH0_M2M_CLIENT_ID
+      - source: auth0-m2m-client-secret
+        target: AUTH0_M2M_CLIENT_SECRET
+      - newrelic-java-options
     networks: [ snippet-net ]
     deploy: *service-deploy
 
   snippet-db:
     image: postgres:17
     environment:
-      POSTGRES_DB: ${SNIPPET_DB_NAME}
-      POSTGRES_USER: ${SNIPPET_DB_USER}
-      POSTGRES_PASSWORD: ${SNIPPET_DB_PASSWORD}
+      POSTGRES_DB: snippet
+      POSTGRES_USER: snippet
+      # La imagen de postgres lee la contraseña del archivo que diga POSTGRES_PASSWORD_FILE.
+      POSTGRES_PASSWORD_FILE: /run/secrets/snippet-db-password
+    secrets: [ snippet-db-password ]
     volumes:
       - snippet-data:/var/lib/postgresql/data
     healthcheck:
@@ -142,6 +160,7 @@ services:
       # Por defecto loguea cada pedido a Azurite con su cuerpo: el código entero de cada snippet, que con el agente
       # además se manda a New Relic. Con un snippet grande son megas de log por pedido. BASIC deja método, URL, status y tiempo.
       AZURE_HTTP_LOG_LEVEL: BASIC
+    secrets: [ newrelic-java-options ]
     networks: [ snippet-net ]
     deploy: *service-deploy
 
@@ -174,18 +193,23 @@ services:
       SERVER_PORT: 8080
       DB_HOST: permission-db
       DB_PORT: 5432
-      DB_NAME: ${PERMISSION_DB_NAME}
-      DB_USER: ${PERMISSION_DB_USER}
-      DB_PASSWORD: ${PERMISSION_DB_PASSWORD}
+      DB_NAME: permission
+      DB_USER: permission
+      SPRING_CONFIG_IMPORT: optional:configtree:/run/secrets/
+    secrets:
+      - source: permission-db-password
+        target: DB_PASSWORD
+      - newrelic-java-options
     networks: [ snippet-net ]
     deploy: *service-deploy
 
   permission-db:
     image: postgres:17
     environment:
-      POSTGRES_DB: ${PERMISSION_DB_NAME}
-      POSTGRES_USER: ${PERMISSION_DB_USER}
-      POSTGRES_PASSWORD: ${PERMISSION_DB_PASSWORD}
+      POSTGRES_DB: permission
+      POSTGRES_USER: permission
+      POSTGRES_PASSWORD_FILE: /run/secrets/permission-db-password
+    secrets: [ permission-db-password ]
     volumes:
       - permission-data:/var/lib/postgresql/data
     healthcheck:
@@ -203,6 +227,7 @@ services:
       NEW_RELIC_APP_NAME: language-service-${IMAGE_TAG}
       JAVA_TOOL_OPTIONS: -XX:MaxRAMPercentage=75
       SERVER_PORT: 8080
+    secrets: [ newrelic-java-options ]
     networks: [ snippet-net ]
     deploy: *service-deploy
 
@@ -218,6 +243,22 @@ configs:
   nginx-locations:
     name: snippet-nginx-locations-${NGINX_CONFIG_VERSION}
     file: ./nginx/locations.conf
+
+# Los secretos son "external": no los crea el stack sino deploy.sh, una sola vez por VM, con los valores que le pasa
+# el workflow desde los secretos del environment de GitHub. Después viven solo dentro de Swarm: no hay ningún .env.
+secrets:
+  snippet-db-password:
+    external: true
+  permission-db-password:
+    external: true
+  duckdns-token:
+    external: true
+  auth0-m2m-client-id:
+    external: true
+  auth0-m2m-client-secret:
+    external: true
+  newrelic-java-options:
+    external: true
 
 volumes:
   snippet-data:

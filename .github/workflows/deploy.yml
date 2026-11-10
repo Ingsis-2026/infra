@@ -1,9 +1,11 @@
 name: Deploy
 
 # Corre solo cuando CI terminó bien sobre un push a main o dev. main despliega a prod y dev a dev.
-# Cada VM es un Swarm de un nodo con su propio .env en ~/snippet-searcher; acá solo copiamos el stack y lo aplicamos.
-# Apagado hasta que existan las VMs: se prende con la variable DEPLOY_ENABLED=true
-# y los secretos SSH_HOST, SSH_USERNAME y SSH_KEY en los environments "dev" y "prod".
+# Cada VM es un Swarm de un nodo sin ninguna configuración propia: acá copiamos el stack y lo aplicamos, y los
+# secretos del environment de GitHub llegan a deploy.sh, que la primera vez los guarda como Docker Secrets.
+# Apagado hasta que existan las VMs: se prende con la variable DEPLOY_ENABLED=true y, en los environments "dev" y
+# "prod", los secretos SSH_HOST, SSH_USERNAME, SSH_KEY, SNIPPET_DB_PASSWORD, PERMISSION_DB_PASSWORD, DUCKDNS_TOKEN,
+# AUTH0_M2M_CLIENT_ID, AUTH0_M2M_CLIENT_SECRET y NEW_RELIC_LICENSE_KEY (y la variable opcional LETSENCRYPT_EMAIL).
 on:
   workflow_run:
     workflows: [ "Continuous Integration" ]
@@ -57,13 +59,24 @@ jobs:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USERNAME }}
           key: ${{ secrets.SSH_KEY }}
-          source: "docker-stack.yml,deploy.sh,certbot.sh,nginx"
+          source: "docker-stack.yml,deploy.sh,certbot.sh,nginx,env"
           target: "~/snippet-searcher"
 
+      # "envs" son las variables que la action pasa por SSH al script: viajan en la sesión, no quedan en la VM.
       - name: Deploy the stack
         uses: appleboy/ssh-action@v1
+        env:
+          TARGET: ${{ github.event.workflow_run.head_branch == 'main' && 'prod' || 'dev' }}
+          SNIPPET_DB_PASSWORD: ${{ secrets.SNIPPET_DB_PASSWORD }}
+          PERMISSION_DB_PASSWORD: ${{ secrets.PERMISSION_DB_PASSWORD }}
+          DUCKDNS_TOKEN: ${{ secrets.DUCKDNS_TOKEN }}
+          AUTH0_M2M_CLIENT_ID: ${{ secrets.AUTH0_M2M_CLIENT_ID }}
+          AUTH0_M2M_CLIENT_SECRET: ${{ secrets.AUTH0_M2M_CLIENT_SECRET }}
+          NEW_RELIC_LICENSE_KEY: ${{ secrets.NEW_RELIC_LICENSE_KEY }}
+          LETSENCRYPT_EMAIL: ${{ vars.LETSENCRYPT_EMAIL }}
         with:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USERNAME }}
           key: ${{ secrets.SSH_KEY }}
-          script: sh ~/snippet-searcher/deploy.sh
+          envs: TARGET,SNIPPET_DB_PASSWORD,PERMISSION_DB_PASSWORD,DUCKDNS_TOKEN,AUTH0_M2M_CLIENT_ID,AUTH0_M2M_CLIENT_SECRET,NEW_RELIC_LICENSE_KEY,LETSENCRYPT_EMAIL
+          script: sh ~/snippet-searcher/deploy.sh "$TARGET"

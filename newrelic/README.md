@@ -116,7 +116,7 @@ Todas están en la política `snippet-searcher-<entorno>` y llegan por mail a `a
 Una sola vez por cuenta y por entorno.
 
 1. **Cuenta de New Relic.** Con la cuenta gratuita alcanza. De **API keys** se necesitan dos: la **License key** (ingest, la que usan los agentes) y una **User key** (`NRAK-...`, la que usa Terraform). También el **account id**.
-2. **La VM.** Agregar `NEW_RELIC_LICENSE_KEY=...` a `~/snippet-searcher/.env` y desplegar el stack (`sh ~/snippet-searcher/deploy.sh`). Los servicios necesitan las imágenes nuevas, que traen el agente: las publica el CD de cada servicio cuando se mergea su PR.
+2. **La VM.** Cargar `NEW_RELIC_LICENSE_KEY` como secreto de los environments `dev` y `prod` de GitHub y desplegar el stack: `deploy.sh` la guarda como Docker Secret (ver [Dónde vive la configuración](../README.md#dónde-vive-la-configuración)). Los servicios necesitan las imágenes nuevas, que traen el agente: las publica el CD de cada servicio cuando se mergea su PR.
 3. **Auth0, para el monitor de punta a punta** (opcional: sin esto se crean todos los demás). En Auth0 → Applications, crear una aplicación *Machine to Machine* autorizada para la API `https://snippet-searcher/api`. El monitor crea sus snippets con ese usuario (`<client id>@clients`) y los borra al terminar.
 4. **Terraform** (o OpenTofu), desde esta carpeta:
 
@@ -174,9 +174,8 @@ docker service update --limit-memory 1G snippet_snippet-service
 **Snippets que desaparecen** (el caso de las 3 AM). Borrarlos directo de la base, sin pasar por la API, es lo mismo que una base que perdió datos:
 
 ```sh
-cd ~/snippet-searcher && set -a && . ./.env && set +a
 # crear antes al menos 3 snippets de prueba sin tests desde la UI; después:
-docker exec $(docker ps -q -f name=snippet_snippet-db) psql -U "$SNIPPET_DB_USER" -d "$SNIPPET_DB_NAME" \
+docker exec $(docker ps -q -f name=snippet_snippet-db) psql -U snippet -d snippet \
   -c "DELETE FROM snippet WHERE id IN (SELECT id FROM snippet WHERE id NOT IN (SELECT snippet_id FROM test_case) LIMIT 3)"
 # en unos 10 minutos: "Snippets que desaparecieron". Solo en dev, con snippets de prueba: no se recuperan.
 ```
