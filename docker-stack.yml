@@ -54,6 +54,18 @@ x-light-deploy: &light-deploy
     limits:
       memory: 128M
 
+# Sin healthcheck Swarm da por lista una tarea apenas arranca el container, y con start-first baja la vieja ahí:
+# como un servicio Java tarda más de un minuto en levantar, cada deploy dejaba la API en 502 ese rato.
+# Con esto la tarea vieja sigue atendiendo hasta que la nueva responde. Solo mira que el servidor conteste, con
+# cualquier status: si se cae la base el servicio da DOWN, pero reiniciarlo no arregla nada.
+# start_period es el tiempo que tiene para levantar antes de que los chequeos fallidos cuenten.
+x-java-healthcheck: &java-healthcheck
+  test: [ "CMD-SHELL", "curl -s -o /dev/null http://localhost:8080/actuator/health" ]
+  interval: 10s
+  timeout: 5s
+  retries: 3
+  start_period: 180s
+
 services:
 
   # Reverse proxy: el único que publica puertos. Por el 80 solo valida Let's Encrypt (lo demás va a HTTPS);
@@ -127,6 +139,7 @@ services:
       - source: auth0-m2m-client-secret
         target: AUTH0_M2M_CLIENT_SECRET
       - newrelic-java-options
+    healthcheck: *java-healthcheck
     networks: [ snippet-net ]
     deploy: *service-deploy
 
@@ -161,6 +174,10 @@ services:
       # además se manda a New Relic. Con un snippet grande son megas de log por pedido. BASIC deja método, URL, status y tiempo.
       AZURE_HTTP_LOG_LEVEL: BASIC
     secrets: [ newrelic-java-options ]
+    # La imagen de la cátedra no trae curl ni wget: alcanza con que bash pueda abrir el puerto.
+    healthcheck:
+      <<: *java-healthcheck
+      test: [ "CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/8080" ]
     networks: [ snippet-net ]
     deploy: *service-deploy
 
@@ -200,6 +217,7 @@ services:
       - source: permission-db-password
         target: DB_PASSWORD
       - newrelic-java-options
+    healthcheck: *java-healthcheck
     networks: [ snippet-net ]
     deploy: *service-deploy
 
@@ -228,6 +246,7 @@ services:
       JAVA_TOOL_OPTIONS: -XX:MaxRAMPercentage=75
       SERVER_PORT: 8080
     secrets: [ newrelic-java-options ]
+    healthcheck: *java-healthcheck
     networks: [ snippet-net ]
     deploy: *service-deploy
 
