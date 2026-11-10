@@ -83,15 +83,35 @@ Cada VM es un Swarm de un solo nodo (manager) que corre el stack `snippet`, defi
 
    ```sh
    docker swarm init --advertise-addr <IP privada de la VM>
-   docker login ghcr.io -u <usuario de GitHub>   # con un PAT con read:packages
-   mkdir -p ~/snippet-searcher
    ```
 
-   y creá `~/snippet-searcher/.env` a partir de `.env.example`, con `IMAGE_TAG` (`dev` o `prod`), contraseñas fuertes para las bases, `DUCKDNS_SUBDOMAIN` y `DUCKDNS_TOKEN` de ese entorno, y `AUTH0_M2M_CLIENT_ID` y `AUTH0_M2M_CLIENT_SECRET` (la aplicación machine-to-machine de Auth0 con la que snippet-service busca con quién compartir).
+   Nada más: en la VM no queda ninguna configuración (ni `.env`, ni `docker login`: las imágenes son públicas). Lo único propio de la VM es `~/.ssh/`, que viene con ella.
+4. **En GitHub**, en los environments `dev` y `prod` del repo: los secretos `SSH_HOST`, `SSH_USERNAME`, `SSH_KEY`, `SNIPPET_DB_PASSWORD` y `PERMISSION_DB_PASSWORD` (contraseñas fuertes), `DUCKDNS_TOKEN`, `AUTH0_M2M_CLIENT_ID` y `AUTH0_M2M_CLIENT_SECRET` (la aplicación machine-to-machine de Auth0 con la que snippet-service busca con quién compartir) y `NEW_RELIC_LICENSE_KEY` (ver [Observabilidad](#observabilidad-new-relic)). Opcional, la variable `LETSENCRYPT_EMAIL`.
+
+### Dónde vive la configuración
+
+| Qué | Dónde |
+|---|---|
+| Lo que cambia entre entornos y no es secreto (`IMAGE_TAG`, `DUCKDNS_SUBDOMAIN`) | `env/dev.env` y `env/prod.env`, versionados |
+| La config de nginx | `nginx/`, como configs de Swarm |
+| Contraseñas, tokens y keys | [Docker Secrets](https://docs.docker.com/engine/swarm/secrets/): Swarm los guarda cifrados y se los monta a cada servicio como un archivo en `/run/secrets` |
+| Los certificados HTTPS | un volumen de Docker, escrito por el container de certbot |
+
+Los secretos los crea `deploy.sh` la primera vez, con los valores que el workflow le pasa por SSH desde los secretos del environment de GitHub. Cada servicio lee el suyo de un archivo: postgres con `POSTGRES_PASSWORD_FILE`, DuckDNS con `FILE__TOKEN`, los servicios de Spring con `SPRING_CONFIG_IMPORT=optional:configtree:/run/secrets/` y el agente de New Relic con `JDK_JAVA_OPTIONS=@archivo`. El único que no puede es `newrelic-infra`, que corre fuera de Swarm: recibe la key en cada deploy.
+
+**Cambiar un secreto:** un secreto de Swarm no se puede modificar y `deploy.sh` no toca los que ya existen. Para cambiar uno, cambialo en GitHub, sacalo del servicio que lo usa y borralo en la VM, y volvé a desplegar:
+
+```sh
+docker service update --secret-rm duckdns-token snippet_duckdns
+docker secret rm duckdns-token
+```
+
+La contraseña de una base además hay que cambiarla adentro de postgres (`ALTER USER`): la del secreto solo se usa al crear el volumen.
 
 ### Después, CI/CD
 
-- **`infra`:** `deploy.yml` copia `docker-stack.yml`, `deploy.sh`, `certbot.sh` y `nginx/` a `~/snippet-searcher` y corre `deploy.sh`, que:
+- **`infra`:** `deploy.yml` copia `docker-stack.yml`, `deploy.sh`, `certbot.sh`, `nginx/` y `env/` a `~/snippet-searcher` y corre `deploy.sh <dev|prod>`, que:
+  1. crea los Docker Secrets que falten;
   1. si todavía no hay certificado, deja uno autofirmado (`certbot.sh self-signed`): sin ninguno nginx no levanta el `443`;
   2. despliega el stack;
   3. corre `certbot.sh`, que pide el certificado a Let's Encrypt y recarga nginx. Let's Encrypt valida el dominio por el `80`, por eso se pide con nginx ya andando.
@@ -102,7 +122,7 @@ Cada VM es un Swarm de un solo nodo (manager) que corre el stack `snippet`, defi
 Si el pedido a Let's Encrypt falla (por ejemplo, porque DuckDNS todavía no apunta a la VM), el deploy no falla: queda el autofirmado (el browser muestra un aviso) y se reintenta en el próximo deploy, o a mano:
 
 ```sh
-sh ~/snippet-searcher/certbot.sh
+sh ~/snippet-searcher/certbot.sh dev   # o prod
 ```
 
 Azurite no necesita nada en la VM: la imagen es pública, su volumen se crea solo y el container de los snippets lo crea `asset-service` con el primer guardado. Redis tampoco: el stream y su consumer group los crea `snippet-service`.
@@ -119,6 +139,10 @@ docker service logs snippet_duckdns         # si DuckDNS aceptó la IP ("OK")
 
 Y desde cualquier lado: `https://<subdominio>.duckdns.org/api/actuator/health`.
 
+## Observabilidad (New Relic)
+
+En las VMs, los cuatro servicios Java (los nuestros y `asset-service`) corren con el agente de New Relic y `deploy.sh` levanta al lado del stack un `newrelic-infra` que mide la VM y cada container. Los monitores sintéticos, las alertas y el dashboard están como código en [`newrelic/`](newrelic/README.md), junto con los puntos de falla de la arquitectura y cómo probar que las alertas saltan.
+
 ## CI/CD
 
 - `ci.yml` valida en cada push y PR:
@@ -128,4 +152,4 @@ Y desde cualquier lado: `https://<subdominio>.duckdns.org/api/actuator/health`.
   - la config de nginx del compose y la de las VMs, con `nginx -t`
 - `deploy.yml` despliega el stack en la VM del entorno cuando CI pasa en un push a `dev` o `main`.
   - Está apagado hasta que la variable `DEPLOY_ENABLED` valga `true`.
-  - Usa los secretos `SSH_HOST`, `SSH_USERNAME` y `SSH_KEY` de los environments `dev` y `prod`.
+  - Usa los secretos de los environments `dev` y `prod` (ver [Deploy en las VMs](#una-sola-vez)).
