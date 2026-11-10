@@ -72,4 +72,9 @@ resource "newrelic_synthetics_cert_check_monitor" "certificate" {
   locations_public       = slice(var.synthetics_locations, 0, 1)
   runtime_type           = "NODE_API"
   runtime_type_version   = "22.20.0"
+
+  # New Relic actualiza solo el runtime de los cert checks a la última versión de Node 22 (22.23.4, por ejemplo).
+  lifecycle {
+    ignore_changes = [runtime_type_version]
+  }
 }

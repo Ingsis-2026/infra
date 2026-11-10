@@ -27,7 +27,7 @@ variable "alert_emails" {
 variable "synthetics_locations" {
   description = "Desde dónde corren los monitores sintéticos. São Paulo está cerca de la VM (Brazil South); Virginia confirma que no es un problema de una sola región."
   type        = list(string)
-  default     = ["AWS_SA_EAST_1", "AWS_US_EAST_1"]
+  default     = ["SA_EAST_1", "US_EAST_1"]
 }
 
 variable "flow_check_period" {
@@ -62,4 +62,31 @@ variable "auth0_synthetics_client_secret" {
   type        = string
   default     = ""
   sensitive   = true
+}
+
+variable "availability_target" {
+  description = "Objetivo de los SLO de disponibilidad, en % de los últimos 28 días. 99,5 deja 3 h 21 min de error budget."
+  type        = number
+  default     = 99.5
+}
+
+variable "latency_target" {
+  description = "Objetivo del SLO de latencia: % de las lecturas que tienen que responder en menos de latency_threshold_seconds."
+  type        = number
+  default     = 99
+}
+
+variable "latency_threshold_seconds" {
+  description = <<-EOT
+    Cuánto puede tardar una lectura para contar como buena. Listar lee el código de cada snippet de la página en
+    asset-service, uno por uno: por eso 500 ms y no los 300 de una lectura simple.
+  EOT
+  type        = number
+  default     = 0.5
+}
+
+variable "stream_backlog_threshold" {
+  description = "Cuántos mensajes esperando en un stream de Redis, durante 15 minutos, cuentan como cola atrasada."
+  type        = number
+  default     = 100
 }

@@ -9,8 +9,25 @@ Se mira el sistema desde tres lados:
 | **Desde afuera** | Monitores sintéticos de New Relic | Si un usuario puede usarlo: la UI, el health de cada servicio, crear un snippet de punta a punta, el certificado | `synthetics.tf` |
 | **Desde cada servicio** | Agente Java de New Relic (APM) en `snippet-service`, `permission-service`, `language-service` y `asset-service` | Pedidos, errores, tiempos, llamados entre servicios, consultas a Postgres y Redis, logs, **traces distribuidos** | `newrelic/newrelic.yml` y el `Dockerfile` de cada servicio; `docker-stack.yml` |
 | **Desde la VM** | Agente de infraestructura (`newrelic-infra`, lo levanta `deploy.sh` fuera del stack) | CPU, memoria y disco de la VM; memoria, CPU y recreaciones de cada container | `deploy.sh` |
+| **Desde los datos** | Eventos que reporta snippet-service con la API del agente | Cuántos snippets hay (cada minuto), quién crea, comparte y borra, a quién se le muestra vacía la lista teniendo snippets, y cuánto espera en cada stream de Redis | `observability/` y `streams/StreamBacklogReporter.kt` en snippet-service |
 
-Las alertas (`alerts.tf`) y el dashboard (`dashboard.tf`) se arman con Terraform: los dos entornos quedan iguales y cualquiera del equipo los puede volver a crear.
+Los SLO (`slo.tf`), las alertas (`alerts.tf`) y el dashboard (`dashboard.tf`) se arman con Terraform: los dos entornos quedan iguales y cualquiera del equipo los puede volver a crear.
+
+## SLO y error budget
+
+Un SLI es el % de eventos que anduvieron bien; el SLO, cuánto tiene que dar en los últimos 28 días (la ventana más larga de New Relic); el error budget, cuánto se puede fallar sin romperlo. Están en la página **SLOs** del dashboard, con el budget que queda.
+
+| SLO | Qué cuenta como bien | Objetivo | Por qué |
+|---|---|---|---|
+| Disponibilidad desde afuera | Los checks de los monitores de la UI y de snippet-service que pasan | 99,5 % (3 h 21 min de budget) | Es lo que ve un usuario, y se mide aunque no haya tráfico. snippet-service da DOWN si se cae su base o Redis. |
+| Disponibilidad de la API | Los pedidos a snippet-service que no terminan en 5xx o excepción (sin los health checks) | 99,5 % | Los 4xx no cuentan: un snippet inválido es una respuesta correcta. |
+| Lecturas rápidas | Los GET a snippet-service que responden en menos de 500 ms | 99 % | 500 ms y no 300: listar lee el código de cada snippet de la página en asset-service, uno por uno. |
+
+Los dos de la API se crean en el primer `apply` después de que snippet-service reporte a New Relic, porque necesitan su entidad de APM.
+
+Cada SLO tiene su alerta de **fast burn**: salta si en la última hora se gastó más del 2% del budget de los 28 días, que a ese ritmo se termina en unos dos días. Así se avisa cuando el SLO está en riesgo, y no por cada cosa que se ve rara.
+
+Ninguno de los tres hubiera visto los snippets «desaparecidos»: todo respondía 200, y rápido. Para eso están las alertas de los datos.
 
 ## La arquitectura y por dónde pasa crear un snippet
 
@@ -89,6 +106,10 @@ Todas están en la política `snippet-searcher-<entorno>` y llegan por mail a `a
 | Container cerca del límite de memoria | Más del 90% de su límite por 2 minutos (warning: 80% por 5) | Un OOM por venir (punto 12) |
 | Container reiniciándose | Más de 2 containers de un servicio en 10 minutos | Crash loop o deploy con rollback (punto 13) |
 | CPU, Memoria, Disco de la VM alta | Más de 90% (disco: 85%) por 5 minutos | Recursos de la VM |
+| SLO en riesgo: (uno por SLO) | En la última hora se gastó más del 2% del error budget de 28 días | Se está por romper un SLO |
+| Snippets que desaparecieron | En 10 minutos faltan 3 o más snippets en la base que nadie borró (los de antes, más los creados, menos los borrados, contra los de ahora) | La base perdió datos: se recreó, no estaba su volumen (punto 10) |
+| Snippets que un usuario no puede ver | Un usuario con snippets en la base lista y permission-service no le devuelve ninguno | Se perdieron los permisos (punto 8) o cambió el `sub` de su token |
+| Cola de Redis atrasada | Más de 100 mensajes esperando en un stream por 15 minutos | Saturación del segundo plano: los workers no dan abasto o fallan (punto 11) |
 
 ## Puesta en marcha
 
@@ -149,3 +170,22 @@ docker service update --limit-memory 1G snippet_snippet-service
 ```
 
 **La VM apagada:** detenerla desde Azure. Saltan `VM sin reportar` y todos los monitores.
+
+**Snippets que desaparecen** (el caso de las 3 AM). Borrarlos directo de la base, sin pasar por la API, es lo mismo que una base que perdió datos:
+
+```sh
+cd ~/snippet-searcher && set -a && . ./.env && set +a
+# crear antes al menos 3 snippets de prueba sin tests desde la UI; después:
+docker exec $(docker ps -q -f name=snippet_snippet-db) psql -U "$SNIPPET_DB_USER" -d "$SNIPPET_DB_NAME" \
+  -c "DELETE FROM snippet WHERE id IN (SELECT id FROM snippet WHERE id NOT IN (SELECT snippet_id FROM test_case) LIMIT 3)"
+# en unos 10 minutos: "Snippets que desaparecieron". Solo en dev, con snippets de prueba: no se recuperan.
+```
+
+**Una cola atrasada:** con language-service abajo, los linteos se acumulan en Redis.
+
+```sh
+docker service scale snippet_language-service=0
+# crear o editar más de 100 snippets (o cambiar las reglas de lint de un usuario con muchos); en 15 minutos,
+# "Cola de Redis atrasada". Después:
+docker service scale snippet_language-service=1
+```

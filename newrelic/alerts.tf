@@ -63,13 +63,13 @@ resource "newrelic_nrql_alert_condition" "service_not_reporting" {
     threshold_occurrences = "all"
   }
 
-  aggregation_window           = 60
-  aggregation_method           = "event_flow"
-  aggregation_delay            = 120
-  expiration_duration          = 180
-  open_violation_on_expiration = true
+  aggregation_window             = 60
+  aggregation_method             = "event_flow"
+  aggregation_delay              = 120
+  expiration_duration            = 180
+  open_violation_on_expiration   = true
   close_violations_on_expiration = false
-  violation_time_limit_seconds = 86400
+  violation_time_limit_seconds   = 86400
 }
 
 # Más del 5% de los pedidos terminan en error (5xx o excepción) durante 5 minutos. Los 4xx no cuentan
@@ -152,6 +152,93 @@ resource "newrelic_nrql_alert_condition" "background_failures" {
   aggregation_window           = 300
   aggregation_method           = "event_timer"
   aggregation_timer            = 60
+  violation_time_limit_seconds = 86400
+}
+
+# --- Desde los datos -----------------------------------------------------------------------------------------------
+# «Mis snippets desaparecieron»: todo responde 200 y rápido, así que ni los monitores ni los SLO lo ven. snippet-service
+# reporta cada minuto cuántos snippets hay (SnippetInventory), cada create y delete (SnippetActivity), y los listados
+# que vuelven vacíos a un usuario que tiene snippets en la base (SnippetsHidden).
+
+# Snippets que se fueron de la base sin que nadie los borrara: al principio de la ventana había N; si se crearon C y se
+# borraron B, al final tendría que haber N + C − B. Lo que falta desapareció (una base que se recreó vacía, un volumen
+# que no estaba, un proceso que borró de más). Un create en los segundos entre el último reporte y el final de la
+# ventana cuenta como uno de más, por eso se avisa desde 3.
+resource "newrelic_nrql_alert_condition" "snippets_vanished" {
+  policy_id   = newrelic_alert_policy.snippet_searcher.id
+  name        = "Snippets que desaparecieron"
+  description = "Faltan snippets en la base que nadie borró (ver \"Datos y colas\" en el dashboard). Revisar si se reinició snippet-db y si estaba su volumen."
+  type        = "static"
+  enabled     = true
+
+  nrql {
+    query = "SELECT earliest(total) + filter(count(*), WHERE action = 'created') - filter(count(*), WHERE action = 'deleted') - latest(total) FROM SnippetInventory, SnippetActivity WHERE appName = '${local.apps["snippet-service"]}'"
+  }
+
+  critical {
+    operator              = "above"
+    threshold             = 2
+    threshold_duration    = 600
+    threshold_occurrences = "at_least_once"
+  }
+
+  fill_option                  = "none"
+  aggregation_window           = 600
+  aggregation_method           = "event_flow"
+  aggregation_delay            = 120
+  slide_by                     = 60
+  violation_time_limit_seconds = 86400
+}
+
+# Un usuario con snippets en la base a quien permission-service no le devuelve ninguno: los ve vacíos aunque estén.
+# Pasa si se perdieron los permisos (permission-db vacía) o si cambió su id de Auth0 (el sub del token).
+resource "newrelic_nrql_alert_condition" "snippets_hidden" {
+  policy_id   = newrelic_alert_policy.snippet_searcher.id
+  name        = "Snippets que un usuario no puede ver"
+  description = "Hay usuarios que tienen snippets en la base pero permission-service no les devuelve ninguno. Ver la tabla en \"Datos y colas\" y revisar permission-db."
+  type        = "static"
+  enabled     = true
+
+  nrql {
+    query = "SELECT count(*) FROM SnippetsHidden WHERE appName = '${local.apps["snippet-service"]}'"
+  }
+
+  critical {
+    operator              = "above"
+    threshold             = 0
+    threshold_duration    = 60
+    threshold_occurrences = "at_least_once"
+  }
+
+  aggregation_window           = 60
+  aggregation_method           = "event_timer"
+  aggregation_timer            = 60
+  violation_time_limit_seconds = 86400
+}
+
+# La saturación del segundo plano: los mensajes de un stream de Redis que esperan (sin entregar, o entregados y sin
+# confirmar). Si no bajan en 15 minutos, los workers no dan abasto o están fallando, y los snippets quedan en PENDING.
+resource "newrelic_nrql_alert_condition" "stream_backlog" {
+  policy_id   = newrelic_alert_policy.snippet_searcher.id
+  name        = "Cola de Redis atrasada"
+  description = "Más de ${var.stream_backlog_threshold} mensajes esperando en {{tag.stream}} hace 15 minutos. Ver si language-service responde y si hay errores en el linteo en segundo plano."
+  type        = "static"
+  enabled     = true
+
+  nrql {
+    query = "SELECT latest(lag) + latest(pending) FROM SnippetStreamBacklog WHERE appName = '${local.apps["snippet-service"]}' FACET stream"
+  }
+
+  critical {
+    operator              = "above"
+    threshold             = var.stream_backlog_threshold
+    threshold_duration    = 900
+    threshold_occurrences = "all"
+  }
+
+  aggregation_window           = 60
+  aggregation_method           = "event_flow"
+  aggregation_delay            = 120
   violation_time_limit_seconds = 86400
 }
 
@@ -281,9 +368,17 @@ resource "newrelic_notification_destination" "team_email" {
   name = "${local.prefix} equipo"
   type = "EMAIL"
 
+  # New Relic guarda los mails en minúscula: así un apply no lo ve como un cambio cada vez.
   property {
     key   = "email"
-    value = join(",", var.alert_emails)
+    value = lower(join(",", var.alert_emails))
+  }
+
+  # New Relic agrega sola una propiedad link_sent_email (a quién mandó el link de alta). Sin esto, cada apply la borra.
+  # Por eso cambiar alert_emails no se aplica solo: hay que recrearlo con
+  # `tofu apply -var-file=dev.tfvars -replace=newrelic_notification_destination.team_email`.
+  lifecycle {
+    ignore_changes = [property]
   }
 }
 

@@ -1,10 +1,18 @@
-# El dashboard del entorno: qué está pasando, de un vistazo. Cuatro páginas: estado general, el flujo de crear un
-# snippet (con sus traces), los servicios uno por uno y la VM con sus containers.
+# El dashboard del entorno: qué está pasando, de un vistazo. Seis páginas: estado general, los SLO con su error
+# budget, el flujo de crear un snippet (con sus traces), los datos y las colas, los servicios uno por uno y la VM con
+# sus containers.
 
 locals {
   snippet_app = local.apps["snippet-service"]
   # La creación de un snippet, por editor (JSON) o por archivo (multipart): los dos son POST /snippets.
   create_filter = "appName = '${local.snippet_app}' AND request.method = 'POST' AND request.uri = '/snippets'"
+  # Lo que snippet-service reporta cada minuto: cuántos snippets hay, de cuántos usuarios y en qué estado.
+  inventory = "SnippetInventory WHERE appName = '${local.snippet_app}'"
+  # Un widget por SLO, en orden y con su posición.
+  slo_widgets = [
+    for index, key in sort(keys(local.service_levels)) :
+    merge(local.service_levels[key], { index = index, sli_guid = newrelic_service_level.slo[key].sli_guid })
+  ]
 }
 
 resource "newrelic_one_dashboard" "snippet_searcher" {
@@ -106,6 +114,52 @@ resource "newrelic_one_dashboard" "snippet_searcher" {
   }
 
   page {
+    name = "SLOs"
+
+    widget_markdown {
+      title  = "Qué cuenta como andar bien"
+      row    = 1
+      column = 1
+      width  = 12
+      height = 2
+      text   = <<-EOT
+        Cada SLO es el % de eventos buenos de los últimos ${local.slo_period} días, contra su objetivo. El **error budget** es
+        cuánto se puede fallar sin romperlo: 100 % es que no se gastó nada, 0 % que se gastó todo, negativo que el SLO
+        está roto. Con budget se puede arriesgar (un deploy, un experimento); sin budget, primero la estabilidad. Los
+        SLO de la API aparecen cuando snippet-service reporta a New Relic. Definiciones en `newrelic/slo.tf`.
+      EOT
+    }
+
+    dynamic "widget_billboard" {
+      for_each = local.slo_widgets
+      content {
+        title  = "${widget_billboard.value.name} (objetivo ${widget_billboard.value.target} %)"
+        row    = 3
+        column = 1 + widget_billboard.value.index * 4
+        width  = 4
+        height = 3
+        nrql_query {
+          query = "SELECT (sum(newrelic.sli.valid) - sum(newrelic.sli.bad)) / sum(newrelic.sli.valid) * 100 AS 'Cumplimiento (%)', 100 - (sum(newrelic.sli.bad) / sum(newrelic.sli.valid) * 100) / (100 - ${widget_billboard.value.target}) * 100 AS 'Error budget que queda (%)' FROM Metric WHERE sli.guid = '${widget_billboard.value.sli_guid}' SINCE ${local.slo_period} days ago"
+        }
+      }
+    }
+
+    widget_line {
+      title  = "Cumplimiento por día (%)"
+      row    = 6
+      column = 1
+      width  = 12
+      height = 3
+      dynamic "nrql_query" {
+        for_each = local.slo_widgets
+        content {
+          query = "SELECT (sum(newrelic.sli.valid) - sum(newrelic.sli.bad)) / sum(newrelic.sli.valid) * 100 AS '${nrql_query.value.name}' FROM Metric WHERE sli.guid = '${nrql_query.value.sli_guid}' TIMESERIES 1 day SINCE ${local.slo_period} days ago"
+        }
+      }
+    }
+  }
+
+  page {
     name = "Crear un snippet"
 
     widget_markdown {
@@ -186,6 +240,109 @@ resource "newrelic_one_dashboard" "snippet_searcher" {
       height = 3
       nrql_query {
         query = "SELECT uniqueCount(trace.id) AS 'Traces' FROM Span WHERE trace.id IN (SELECT uniques(trace.id) FROM Transaction WHERE ${local.create_filter} SINCE 1 hour ago LIMIT MAX) FACET appName SINCE 1 hour ago"
+      }
+    }
+  }
+
+  page {
+    name = "Datos y colas"
+
+    widget_billboard {
+      title  = "Snippets en la base, contra hace un día"
+      row    = 1
+      column = 1
+      width  = 4
+      height = 3
+      nrql_query {
+        query = "SELECT latest(total) AS 'Snippets', latest(owners) AS 'Usuarios con snippets' FROM ${local.inventory} SINCE 10 minutes ago COMPARE WITH 1 day ago"
+      }
+    }
+
+    widget_line {
+      title  = "Snippets en la base (7 días)"
+      row    = 1
+      column = 5
+      width  = 4
+      height = 3
+      nrql_query {
+        query = "SELECT latest(total) AS 'Snippets' FROM ${local.inventory} TIMESERIES AUTO SINCE 7 days ago"
+      }
+    }
+
+    widget_line {
+      title  = "Snippets que faltan sin que nadie los borre (cada 10 min)"
+      row    = 1
+      column = 9
+      width  = 4
+      height = 3
+      nrql_query {
+        query = "SELECT earliest(total) + filter(count(*), WHERE action = 'created') - filter(count(*), WHERE action = 'deleted') - latest(total) AS 'Faltan' FROM SnippetInventory, SnippetActivity WHERE appName = '${local.snippet_app}' TIMESERIES 10 minutes SINCE 1 day ago"
+      }
+    }
+
+    widget_line {
+      title  = "Creados, actualizados, compartidos y borrados por hora"
+      row    = 4
+      column = 1
+      width  = 8
+      height = 3
+      nrql_query {
+        query = "SELECT count(*) FROM SnippetActivity WHERE appName = '${local.snippet_app}' FACET action TIMESERIES 1 hour SINCE 7 days ago"
+      }
+    }
+
+    widget_billboard {
+      title  = "Listados que vuelven vacíos (24 h)"
+      row    = 4
+      column = 9
+      width  = 4
+      height = 3
+      nrql_query {
+        query = "SELECT percentage(count(*), WHERE `snippets.listed` = 0) AS 'Vacíos (%)', count(*) AS 'Listados' FROM Transaction WHERE appName = '${local.snippet_app}' AND `snippets.listed` IS NOT NULL SINCE 1 day ago"
+      }
+    }
+
+    widget_table {
+      title  = "Usuarios que ven vacía su lista teniendo snippets en la base"
+      row    = 7
+      column = 1
+      width  = 6
+      height = 3
+      nrql_query {
+        query = "SELECT count(*) AS 'Veces', latest(owned) AS 'Snippets en la base', max(timestamp) AS 'Última vez' FROM SnippetsHidden WHERE appName = '${local.snippet_app}' FACET userId SINCE 7 days ago"
+      }
+    }
+
+    widget_table {
+      title  = "Últimos borrados: de quién y cuál"
+      row    = 7
+      column = 7
+      width  = 6
+      height = 3
+      nrql_query {
+        query = "SELECT ownerId AS 'Owner', snippetId AS 'Snippet' FROM SnippetActivity WHERE appName = '${local.snippet_app}' AND action = 'deleted' SINCE 7 days ago LIMIT 20"
+      }
+    }
+
+    widget_line {
+      title  = "Mensajes esperando en cada stream de Redis (saturación)"
+      row    = 10
+      column = 1
+      width  = 6
+      height = 3
+      nrql_query {
+        query = "SELECT latest(lag) AS 'Sin entregar', latest(pending) AS 'Sin confirmar' FROM SnippetStreamBacklog WHERE appName = '${local.snippet_app}' FACET stream TIMESERIES AUTO"
+      }
+    }
+
+    widget_line {
+      title  = "Snippets por estado"
+      row    = 10
+      column = 7
+      width  = 6
+      height = 3
+      nrql_query {
+        query = "SELECT latest(pending) AS 'PENDING', latest(compliant) AS 'COMPLIANT', latest(notCompliant) AS 'NOT_COMPLIANT', latest(invalid) AS 'INVALID' FROM ${local.inventory} TIMESERIES AUTO"
       }
     }
   }
