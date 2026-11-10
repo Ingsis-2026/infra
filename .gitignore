@@ -2,3 +2,10 @@
 *.log
 .idea/
 .vscode/
+
+# Terraform de New Relic: el estado guarda secretos (el client secret de Auth0) y cada uno arma sus .tfvars.
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!newrelic/example.tfvars
