@@ -2,7 +2,7 @@
 # Se despliega con deploy.sh <dev|prod>. En la VM no queda ninguna configuración: lo que cambia entre entornos y
 # no es secreto está versionado en env/<entorno>.env, y lo secreto son Docker Secrets (al final de este archivo),
 # que Swarm guarda cifrados y le monta a cada servicio como un archivo en /run/secrets.
-# Diferencias con el compose: sin depends_on ni restart (Swarm reinicia lo que falla con restart_policy),
+# Diferencias con el compose: sin depends_on ni restart (Swarm reinicia lo que se cae con restart_policy),
 # el único que publica puertos es el reverse proxy (80 y 443, con HTTPS) y DuckDNS mantiene el dominio apuntando a la VM.
 
 # El agente de New Relic de los servicios Java (los nuestros y el asset-service de la cátedra). Cada servicio agrega
@@ -16,10 +16,13 @@ x-newrelic-env: &newrelic-env
   JDK_JAVA_OPTIONS: "@/run/secrets/newrelic-java-options"
   NEW_RELIC_LABELS: env:${IMAGE_TAG};stack:snippet
 
+# restart_policy "any" y no "on-failure": ninguno de estos servicios termina nunca por las suyas, así que si un
+# container sale, aunque sea con código 0, hay que volver a levantarlo. Con "on-failure", cuando la VM se apagaba
+# DuckDNS salía prolijo (código 0), Swarm lo daba por terminado y al prender la VM quedaba en 0/1 para siempre.
 x-service-deploy: &service-deploy
   replicas: 1
   restart_policy:
-    condition: on-failure
+    condition: any
   # Levanta la tarea nueva antes de bajar la vieja; si la nueva no arranca, vuelve a la imagen anterior.
   update_config:
     order: start-first
@@ -34,7 +37,7 @@ x-service-deploy: &service-deploy
 x-db-deploy: &db-deploy
   replicas: 1
   restart_policy:
-    condition: on-failure
+    condition: any
   # Los volúmenes son locales al nodo: la base tiene que correr siempre en el mismo.
   placement:
     constraints: [ node.role == manager ]
@@ -46,7 +49,7 @@ x-db-deploy: &db-deploy
 x-light-deploy: &light-deploy
   replicas: 1
   restart_policy:
-    condition: on-failure
+    condition: any
   update_config:
     order: start-first
     failure_action: rollback
