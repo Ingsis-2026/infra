@@ -1,7 +1,7 @@
 # Snippet Searcher en Docker Swarm: el mismo sistema que docker-compose.yml, pero para las VMs.
 # Se despliega con deploy.sh, que carga el .env de la VM (docker stack deploy no lo lee solo).
 # Diferencias con el compose: sin depends_on ni restart (Swarm reinicia lo que falla con restart_policy),
-# las bases, asset-service, Azurite y Redis no publican puertos y solo snippet-service queda expuesto hacia afuera.
+# el único que publica puertos es el reverse proxy (80 y 443, con HTTPS) y DuckDNS mantiene el dominio apuntando a la VM.
 
 x-service-deploy: &service-deploy
   replicas: 1
@@ -27,12 +27,63 @@ x-db-deploy: &db-deploy
     limits:
       memory: 512M
 
+# Para los containers livianos: el proxy, la UI (archivos estáticos) y DuckDNS.
+x-light-deploy: &light-deploy
+  replicas: 1
+  restart_policy:
+    condition: on-failure
+  update_config:
+    order: start-first
+    failure_action: rollback
+  resources:
+    limits:
+      memory: 128M
+
 services:
+
+  # Reverse proxy: el único que publica puertos. Por el 80 solo valida Let's Encrypt (lo demás va a HTTPS);
+  # por el 443 sirve la UI en / y snippet-service en /api. Las rutas están en nginx/locations.conf.
+  proxy:
+    image: nginx:1.27-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DUCKDNS_SUBDOMAIN}.duckdns.org
+    # Los configs de Swarm meten cada archivo en el container, en el path de "target".
+    configs:
+      - source: nginx-server
+        target: /etc/nginx/templates/default.conf.template
+      - source: nginx-locations
+        target: /etc/nginx/snippet/locations.conf
+    # El certificado lo escribe certbot.sh (un container de certbot que corre una vez), nginx solo lo lee.
+    volumes:
+      - letsencrypt:/etc/letsencrypt
+      - acme-challenge:/var/www/certbot
+    networks: [ snippet-net ]
+    deploy:
+      <<: *light-deploy
+      # Los certificados están en un volumen local al nodo, como las bases.
+      placement:
+        constraints: [ node.role == manager ]
+
+  # Mantiene <DUCKDNS_SUBDOMAIN>.duckdns.org apuntando a la IP pública de esta VM: la avisa cada 5 minutos.
+  duckdns:
+    image: lscr.io/linuxserver/duckdns:latest
+    environment:
+      SUBDOMAINS: ${DUCKDNS_SUBDOMAIN}
+      TOKEN: ${DUCKDNS_TOKEN}
+      TZ: America/Argentina/Buenos_Aires
+    deploy: *light-deploy
+
+  # La UI: su imagen es un nginx que sirve los archivos estáticos. No publica puertos: se llega por el proxy.
+  printscript-ui:
+    image: ghcr.io/ingsis-2026/printscript-ui:${IMAGE_TAG}
+    networks: [ snippet-net ]
+    deploy: *light-deploy
 
   snippet-service:
     image: ghcr.io/ingsis-2026/snippet-service:${IMAGE_TAG}
-    ports:
-      - "${SNIPPET_SERVICE_PORT:-8080}:8080"
     environment:
       JAVA_TOOL_OPTIONS: -XX:MaxRAMPercentage=75
       DB_HOST: snippet-db
@@ -139,8 +190,21 @@ networks:
   snippet-net:
     driver: overlay
 
+# Un config no se puede modificar: deploy.sh pone en NGINX_CONFIG_VERSION un hash de nginx/, así cada cambio es un config nuevo.
+configs:
+  nginx-server:
+    name: snippet-nginx-server-${NGINX_CONFIG_VERSION}
+    file: ./nginx/vm.conf.template
+  nginx-locations:
+    name: snippet-nginx-locations-${NGINX_CONFIG_VERSION}
+    file: ./nginx/locations.conf
+
 volumes:
   snippet-data:
   permission-data:
   azurite-data:
   redis-data:
+  # Los certificados de Let's Encrypt (los escribe certbot.sh, los lee nginx).
+  letsencrypt:
+  # Donde certbot.sh deja el archivo que Let's Encrypt viene a buscar por el puerto 80.
+  acme-challenge:
