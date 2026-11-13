@@ -3,6 +3,7 @@
 #
 #   export NEW_RELIC_API_KEY=NRAK-...      # una User key de la cuenta (no la license key)
 #   terraform init
+#   terraform workspace select -or-create dev     # cada entorno, en su workspace (su propio estado)
 #   terraform apply -var-file=dev.tfvars
 #
 # Ver README.md de esta carpeta.

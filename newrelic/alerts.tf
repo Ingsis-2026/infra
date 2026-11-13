@@ -8,6 +8,15 @@ resource "newrelic_alert_policy" "snippet_searcher" {
   name = local.prefix
   # Un incidente por condición y por cada servicio/monitor: si se caen dos servicios, son dos avisos distintos.
   incident_preference = "PER_CONDITION_AND_TARGET"
+
+  # Cada entorno tiene su propio estado: el workspace de OpenTofu/Terraform con su nombre (ver README). Con el
+  # workspace equivocado, el plan reemplazaría todo lo del otro entorno por lo de este: mejor que falle acá.
+  lifecycle {
+    precondition {
+      condition     = terraform.workspace == var.environment
+      error_message = "El workspace es \"${terraform.workspace}\" y environment es \"${var.environment}\". Antes del plan: tofu workspace select ${var.environment} (o terraform workspace select)."
+    }
+  }
 }
 
 # --- Desde afuera ---------------------------------------------------------------------------------------------------
