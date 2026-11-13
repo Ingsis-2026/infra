@@ -1,8 +1,25 @@
-# Snippet Searcher: todos los servicios y sus bases de datos en un solo compose.
-# Las imágenes de los servicios las publica el CD de cada repo en ghcr.io/ingsis-2026, a partir de su Dockerfile.
+# Snippet Searcher: el reverse proxy, la UI, todos los servicios, sus bases de datos, el asset-service de la cátedra, Azurite y Redis
+# en un solo compose. Las imágenes de los servicios las publica el CD de cada repo en ghcr.io/ingsis-2026, a partir de su Dockerfile.
 # IMAGE_TAG (en el .env) elige cuáles se levantan: dev o prod. Si un puerto ya está ocupado en tu máquina, cambialo en el .env.
+# En tu máquina cada servicio publica además su puerto, para probarlo o correrlo desde el IDE; en las VMs, solo el proxy.
 
 services:
+
+  # Reverse proxy, con las mismas rutas que en las VMs (nginx/locations.conf) pero solo HTTP:
+  # la UI en http://localhost y snippet-service en http://localhost/api.
+  proxy:
+    image: nginx:1.27-alpine
+    ports:
+      - "${PROXY_PORT:-80}:80"
+    volumes:
+      - ./nginx/local.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./nginx/locations.conf:/etc/nginx/snippet/locations.conf:ro
+    restart: unless-stopped
+
+  # La UI: su imagen es un nginx que sirve los archivos estáticos.
+  printscript-ui:
+    image: ghcr.io/ingsis-2026/printscript-ui:${IMAGE_TAG}
+    restart: unless-stopped
 
   snippet-service:
     image: ghcr.io/ingsis-2026/snippet-service:${IMAGE_TAG}
@@ -16,9 +33,19 @@ services:
       DB_PASSWORD: ${SNIPPET_DB_PASSWORD}
       PERMISSION_URL: http://permission-service:8080
       LANGUAGE_URL: http://language-service:8080
+      ASSET_URL: http://asset-service:8080
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      # La aplicación machine-to-machine de Auth0 para buscar con quién compartir (US7). Salen del .env.
+      AUTH0_M2M_CLIENT_ID: ${AUTH0_M2M_CLIENT_ID:-}
+      AUTH0_M2M_CLIENT_SECRET: ${AUTH0_M2M_CLIENT_SECRET:-}
     depends_on:
       snippet-db:
         condition: service_healthy
+      asset-service:
+        condition: service_started
+      redis:
+        condition: service_started
     restart: unless-stopped
 
   snippet-db:
@@ -36,6 +63,44 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    restart: unless-stopped
+
+  # El asset-service de la cátedra: guarda el código de los snippets en Azurite. snippet-service le
+  # habla por HTTP y es el único que habla con Azurite. Escucha en el 8080; su health está en el 9090.
+  # La imagen no es nuestra: la publica austral-ingsis y no tiene tags dev/prod, solo latest.
+  asset-service:
+    image: ghcr.io/austral-ingsis/snippet-asset-service:latest
+    ports:
+      - "${ASSET_SERVICE_PORT:-8083}:8080"
+    environment:
+      AZURE_HOST: http://azurite
+      # La imagen arranca con el agente de New Relic; sin licencia, apagado.
+      NEW_RELIC_AGENT_ENABLED: "false"
+    depends_on:
+      azurite:
+        condition: service_started
+    restart: unless-stopped
+
+  # Emulador de Azure Blob Storage: ahí guarda asset-service el código de los snippets. Solo el
+  # servicio de blobs, escuchando en 0.0.0.0 para que se llegue desde los otros containers.
+  azurite:
+    image: mcr.microsoft.com/azure-storage/azurite
+    command: azurite-blob --blobHost 0.0.0.0 --blobPort 10000 --location /data
+    ports:
+      - "10000:10000"
+    volumes:
+      - azurite-data:/data
+    restart: unless-stopped
+
+  # La cola de snippets a lintear (US15): un stream que escribe y lee snippet-service. Con AOF,
+  # para que lo encolado y todavía no procesado sobreviva a un reinicio.
+  redis:
+    image: redis:7
+    command: redis-server --appendonly yes
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
     restart: unless-stopped
 
   permission-service:
@@ -82,3 +147,5 @@ services:
 volumes:
   snippet-data:
   permission-data:
+  azurite-data:
+  redis-data:

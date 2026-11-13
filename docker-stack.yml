@@ -1,0 +1,293 @@
+# Snippet Searcher en Docker Swarm: el mismo sistema que docker-compose.yml, pero para las VMs.
+# Se despliega con deploy.sh <dev|prod>. En la VM no queda ninguna configuración: lo que cambia entre entornos y
+# no es secreto está versionado en env/<entorno>.env, y lo secreto son Docker Secrets (al final de este archivo),
+# que Swarm guarda cifrados y le monta a cada servicio como un archivo en /run/secrets.
+# Diferencias con el compose: sin depends_on ni restart (Swarm reinicia lo que se cae con restart_policy),
+# el único que publica puertos es el reverse proxy (80 y 443, con HTTPS) y DuckDNS mantiene el dominio apuntando a la VM.
+
+# El agente de New Relic de los servicios Java (los nuestros y el asset-service de la cátedra). Cada servicio agrega
+# su NEW_RELIC_APP_NAME, <servicio>-<entorno>: IMAGE_TAG es dev o prod, así cada entorno es otra aplicación en New Relic.
+# La license key no va por variable de entorno: el agente no sabe leerla de un archivo, pero el comando java sí
+# lee opciones de un archivo con JDK_JAVA_OPTIONS=@archivo. El secreto newrelic-java-options es ese archivo, con
+# -Dnewrelic.config.license_key=<key> (lo arma deploy.sh). Sirve igual para el asset-service de la cátedra, sin
+# tocar su imagen, y el log solo muestra el path del archivo, no la key.
+x-newrelic-env: &newrelic-env
+  NEW_RELIC_AGENT_ENABLED: "true"
+  JDK_JAVA_OPTIONS: "@/run/secrets/newrelic-java-options"
+  NEW_RELIC_LABELS: env:${IMAGE_TAG};stack:snippet
+
+# restart_policy "any" y no "on-failure": ninguno de estos servicios termina nunca por las suyas, así que si un
+# container sale, aunque sea con código 0, hay que volver a levantarlo. Con "on-failure", cuando la VM se apagaba
+# DuckDNS salía prolijo (código 0), Swarm lo daba por terminado y al prender la VM quedaba en 0/1 para siempre.
+x-service-deploy: &service-deploy
+  replicas: 1
+  restart_policy:
+    condition: any
+  # Levanta la tarea nueva antes de bajar la vieja; si la nueva no arranca, vuelve a la imagen anterior.
+  update_config:
+    order: start-first
+    monitor: 60s
+    failure_action: rollback
+  # 1 GB: el agente de New Relic suma ~100 MB fuera del heap; con 768 MB un servicio con el heap lleno
+  # quedaba al borde del límite, donde Docker lo mata (OOM) y Swarm lo reinicia.
+  resources:
+    limits:
+      memory: 1G
+
+x-db-deploy: &db-deploy
+  replicas: 1
+  restart_policy:
+    condition: any
+  # Los volúmenes son locales al nodo: la base tiene que correr siempre en el mismo.
+  placement:
+    constraints: [ node.role == manager ]
+  resources:
+    limits:
+      memory: 512M
+
+# Para los containers livianos: el proxy, la UI (archivos estáticos) y DuckDNS.
+x-light-deploy: &light-deploy
+  replicas: 1
+  restart_policy:
+    condition: any
+  update_config:
+    order: start-first
+    failure_action: rollback
+  resources:
+    limits:
+      memory: 128M
+
+# Sin healthcheck Swarm da por lista una tarea apenas arranca el container, y con start-first baja la vieja ahí:
+# como un servicio Java tarda más de un minuto en levantar, cada deploy dejaba la API en 502 ese rato.
+# Con esto la tarea vieja sigue atendiendo hasta que la nueva responde. Solo mira que el servidor conteste, con
+# cualquier status: si se cae la base el servicio da DOWN, pero reiniciarlo no arregla nada.
+# start_period es el tiempo que tiene para levantar antes de que los chequeos fallidos cuenten.
+x-java-healthcheck: &java-healthcheck
+  test: [ "CMD-SHELL", "curl -s -o /dev/null http://localhost:8080/actuator/health" ]
+  interval: 10s
+  timeout: 5s
+  retries: 3
+  start_period: 180s
+
+services:
+
+  # Reverse proxy: el único que publica puertos. Por el 80 solo valida Let's Encrypt (lo demás va a HTTPS);
+  # por el 443 sirve la UI en / y snippet-service en /api. Las rutas están en nginx/locations.conf.
+  proxy:
+    image: nginx:1.27-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DUCKDNS_SUBDOMAIN}.duckdns.org
+    # Los configs de Swarm meten cada archivo en el container, en el path de "target".
+    configs:
+      - source: nginx-server
+        target: /etc/nginx/templates/default.conf.template
+      - source: nginx-locations
+        target: /etc/nginx/snippet/locations.conf
+    # El certificado lo escribe certbot.sh (un container de certbot que corre una vez), nginx solo lo lee.
+    volumes:
+      - letsencrypt:/etc/letsencrypt
+      - acme-challenge:/var/www/certbot
+    networks: [ snippet-net ]
+    deploy:
+      <<: *light-deploy
+      # Los certificados están en un volumen local al nodo, como las bases.
+      placement:
+        constraints: [ node.role == manager ]
+
+  # Mantiene <DUCKDNS_SUBDOMAIN>.duckdns.org apuntando a la IP pública de esta VM: la avisa cada 5 minutos.
+  duckdns:
+    image: lscr.io/linuxserver/duckdns:latest
+    environment:
+      SUBDOMAINS: ${DUCKDNS_SUBDOMAIN}
+      # Las imágenes de linuxserver leen la variable TOKEN del archivo que diga FILE__TOKEN.
+      FILE__TOKEN: /run/secrets/duckdns-token
+      TZ: America/Argentina/Buenos_Aires
+    secrets: [ duckdns-token ]
+    deploy: *light-deploy
+
+  # La UI: su imagen es un nginx que sirve los archivos estáticos. No publica puertos: se llega por el proxy.
+  printscript-ui:
+    image: ghcr.io/ingsis-2026/printscript-ui:${IMAGE_TAG}
+    networks: [ snippet-net ]
+    deploy: *light-deploy
+
+  snippet-service:
+    image: ghcr.io/ingsis-2026/snippet-service:${IMAGE_TAG}
+    environment:
+      <<: *newrelic-env
+      NEW_RELIC_APP_NAME: snippet-service-${IMAGE_TAG}
+      JAVA_TOOL_OPTIONS: -XX:MaxRAMPercentage=75
+      DB_HOST: snippet-db
+      DB_PORT: 5432
+      DB_NAME: snippet
+      DB_USER: snippet
+      # Spring lee cada archivo de /run/secrets como una propiedad con el nombre del archivo: así DB_PASSWORD,
+      # AUTH0_M2M_CLIENT_ID y AUTH0_M2M_CLIENT_SECRET llegan al application.yml igual que si fueran variables.
+      SPRING_CONFIG_IMPORT: optional:configtree:/run/secrets/
+      PERMISSION_URL: http://permission-service:8080
+      LANGUAGE_URL: http://language-service:8080
+      ASSET_URL: http://asset-service:8080
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    # "target" es el nombre del archivo en /run/secrets. Los de Auth0 son la aplicación machine-to-machine
+    # para buscar con quién compartir (US7).
+    secrets:
+      - source: snippet-db-password
+        target: DB_PASSWORD
+      - source: auth0-m2m-client-id
+        target: AUTH0_M2M_CLIENT_ID
+      - source: auth0-m2m-client-secret
+        target: AUTH0_M2M_CLIENT_SECRET
+      - newrelic-java-options
+    healthcheck: *java-healthcheck
+    networks: [ snippet-net ]
+    deploy: *service-deploy
+
+  snippet-db:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: snippet
+      POSTGRES_USER: snippet
+      # La imagen de postgres lee la contraseña del archivo que diga POSTGRES_PASSWORD_FILE.
+      POSTGRES_PASSWORD_FILE: /run/secrets/snippet-db-password
+    secrets: [ snippet-db-password ]
+    volumes:
+      - snippet-data:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}" ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks: [ snippet-net ]
+    deploy: *db-deploy
+
+  # El asset-service de la cátedra: guarda el código de los snippets en Azurite. Sin "ports": no
+  # tiene autenticación, así que solo se llega desde snippet-net. Su imagen solo tiene latest.
+  asset-service:
+    image: ghcr.io/austral-ingsis/snippet-asset-service:latest
+    environment:
+      <<: *newrelic-env
+      NEW_RELIC_APP_NAME: asset-service-${IMAGE_TAG}
+      JAVA_TOOL_OPTIONS: -XX:MaxRAMPercentage=75
+      AZURE_HOST: http://azurite
+      # Por defecto loguea cada pedido a Azurite con su cuerpo: el código entero de cada snippet, que con el agente
+      # además se manda a New Relic. Con un snippet grande son megas de log por pedido. BASIC deja método, URL, status y tiempo.
+      AZURE_HTTP_LOG_LEVEL: BASIC
+    secrets: [ newrelic-java-options ]
+    # La imagen de la cátedra no trae curl ni wget: alcanza con que bash pueda abrir el puerto.
+    healthcheck:
+      <<: *java-healthcheck
+      test: [ "CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/8080" ]
+    networks: [ snippet-net ]
+    deploy: *service-deploy
+
+  # Donde asset-service guarda el código de los snippets. Sin "ports": solo se llega desde snippet-net,
+  # como a las bases.
+  azurite:
+    image: mcr.microsoft.com/azure-storage/azurite
+    command: azurite-blob --blobHost 0.0.0.0 --blobPort 10000 --location /data
+    volumes:
+      - azurite-data:/data
+    networks: [ snippet-net ]
+    deploy: *db-deploy
+
+  # La cola de snippets a lintear (US15). Sin "ports", como las bases; con AOF y en el manager,
+  # porque lo encolado vive en un volumen local al nodo.
+  redis:
+    image: redis:7
+    command: redis-server --appendonly yes
+    volumes:
+      - redis-data:/data
+    networks: [ snippet-net ]
+    deploy: *db-deploy
+
+  permission-service:
+    image: ghcr.io/ingsis-2026/permission-service:${IMAGE_TAG}
+    environment:
+      <<: *newrelic-env
+      NEW_RELIC_APP_NAME: permission-service-${IMAGE_TAG}
+      JAVA_TOOL_OPTIONS: -XX:MaxRAMPercentage=75
+      SERVER_PORT: 8080
+      DB_HOST: permission-db
+      DB_PORT: 5432
+      DB_NAME: permission
+      DB_USER: permission
+      SPRING_CONFIG_IMPORT: optional:configtree:/run/secrets/
+    secrets:
+      - source: permission-db-password
+        target: DB_PASSWORD
+      - newrelic-java-options
+    healthcheck: *java-healthcheck
+    networks: [ snippet-net ]
+    deploy: *service-deploy
+
+  permission-db:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: permission
+      POSTGRES_USER: permission
+      POSTGRES_PASSWORD_FILE: /run/secrets/permission-db-password
+    secrets: [ permission-db-password ]
+    volumes:
+      - permission-data:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}" ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks: [ snippet-net ]
+    deploy: *db-deploy
+
+  language-service:
+    image: ghcr.io/ingsis-2026/language-service:${IMAGE_TAG}
+    environment:
+      <<: *newrelic-env
+      NEW_RELIC_APP_NAME: language-service-${IMAGE_TAG}
+      JAVA_TOOL_OPTIONS: -XX:MaxRAMPercentage=75
+      SERVER_PORT: 8080
+    secrets: [ newrelic-java-options ]
+    healthcheck: *java-healthcheck
+    networks: [ snippet-net ]
+    deploy: *service-deploy
+
+networks:
+  snippet-net:
+    driver: overlay
+
+# Un config no se puede modificar: deploy.sh pone en NGINX_CONFIG_VERSION un hash de nginx/, así cada cambio es un config nuevo.
+configs:
+  nginx-server:
+    name: snippet-nginx-server-${NGINX_CONFIG_VERSION}
+    file: ./nginx/vm.conf.template
+  nginx-locations:
+    name: snippet-nginx-locations-${NGINX_CONFIG_VERSION}
+    file: ./nginx/locations.conf
+
+# Los secretos son "external": no los crea el stack sino deploy.sh, una sola vez por VM, con los valores que le pasa
+# el workflow desde los secretos del environment de GitHub. Después viven solo dentro de Swarm: no hay ningún .env.
+secrets:
+  snippet-db-password:
+    external: true
+  permission-db-password:
+    external: true
+  duckdns-token:
+    external: true
+  auth0-m2m-client-id:
+    external: true
+  auth0-m2m-client-secret:
+    external: true
+  newrelic-java-options:
+    external: true
+
+volumes:
+  snippet-data:
+  permission-data:
+  azurite-data:
+  redis-data:
+  # Los certificados de Let's Encrypt (los escribe certbot.sh, los lee nginx).
+  letsencrypt:
+  # Donde certbot.sh deja el archivo que Let's Encrypt viene a buscar por el puerto 80.
+  acme-challenge:
