@@ -93,7 +93,7 @@ Lo que se puede romper, qué pasa entonces y cómo nos enteramos. *Pendiente* es
 
 ## Alertas
 
-Todas están en la política `snippet-searcher-<entorno>` y llegan por mail a `alert_emails` cuando se abren, se reconocen y se cierran. Un incidente por condición y por servicio: si se caen dos servicios, son dos avisos.
+Todas están en la política `snippet-searcher-<entorno>` y llegan por mail a `alert_emails` cuando se abren, se reconocen y se cierran. Un solo incidente por política: lo que falle mientras está abierto se suma a ese incidente (en New Relic se ve qué condiciones fallaron), así que llega un mail al abrirse y otro al cerrarse. Las VMs pasan la mayor parte del tiempo apagadas para no gastar crédito: apagar una manda un mail, no uno por cada servicio y monitor. Un incidente abierto dura hasta 30 días, así que con la VM apagada tampoco se repite cada día.
 
 | Condición | Salta cuando | Para qué |
 |---|---|---|
