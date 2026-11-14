@@ -93,7 +93,7 @@ Lo que se puede romper, qué pasa entonces y cómo nos enteramos. *Pendiente* es
 
 ## Alertas
 
-Todas están en la política `snippet-searcher-<entorno>` y llegan por mail a `alert_emails` cuando se abren, se reconocen y se cierran. Un incidente por condición y por servicio: si se caen dos servicios, son dos avisos.
+Todas están en la política `snippet-searcher-<entorno>` y llegan por mail a `alert_emails` cuando se abren, se reconocen y se cierran. Un solo incidente por política: lo que falle mientras está abierto se suma a ese incidente (en New Relic se ve qué condiciones fallaron), así que llega un mail al abrirse y otro al cerrarse. Las VMs pasan la mayor parte del tiempo apagadas para no gastar crédito: apagar una manda un mail, no uno por cada servicio y monitor. Un incidente abierto dura hasta 30 días, así que con la VM apagada tampoco se repite cada día.
 
 | Condición | Salta cuando | Para qué |
 |---|---|---|
@@ -121,14 +121,19 @@ Una sola vez por cuenta y por entorno.
 4. **Terraform** (o OpenTofu), desde esta carpeta:
 
    ```sh
-   cp example.tfvars dev.tfvars                      # y completarlo
+   cp example.tfvars dev.tfvars                      # y completarlo (prod.tfvars para prod)
    export NEW_RELIC_API_KEY=NRAK-...                 # la User key
    export TF_VAR_auth0_synthetics_client_secret=...  # si se completó auth0_synthetics_client_id
    terraform init
+   terraform workspace select -or-create dev         # un workspace por entorno, con su nombre
    terraform apply -var-file=dev.tfvars
    ```
 
-   Al final imprime la URL del dashboard. El estado (`terraform.tfstate`) queda en la máquina de quien lo aplicó y guarda el client secret: no se commitea.
+   Para prod, lo mismo con `prod.tfvars` y `terraform workspace select -or-create prod`.
+
+   Cada entorno tiene **su propio estado**, el de su workspace (`terraform.tfstate.d/<entorno>/terraform.tfstate`). Con un solo estado para los dos, aplicar `prod.tfvars` reemplazaría las alertas, los monitores y el dashboard de dev por los de prod. Por eso el plan falla si el workspace no se llama como `environment`.
+
+   Al final imprime la URL del dashboard. El estado queda en la máquina de quien lo aplicó y guarda el client secret: no se commitea.
 
 Los monitores de ping son gratis y corren cada minuto. El de punta a punta cuenta contra los checks del plan (500 por mes en el gratuito), por eso corre cada 6 horas; para la demo, `flow_check_period = "EVERY_5_MINUTES"` y otro `apply`.
 

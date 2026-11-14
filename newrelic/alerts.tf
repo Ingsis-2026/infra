@@ -6,8 +6,19 @@
 
 resource "newrelic_alert_policy" "snippet_searcher" {
   name = local.prefix
-  # Un incidente por condición y por cada servicio/monitor: si se caen dos servicios, son dos avisos distintos.
-  incident_preference = "PER_CONDITION_AND_TARGET"
+  # Un solo incidente por política: lo que falle mientras está abierto se suma a ese incidente (en New Relic se ve
+  # cada condición) y llega un solo mail al abrirse y otro al cerrarse. Las VMs pasan la mayor parte del tiempo
+  # apagadas para no gastar crédito, y con un incidente por condición y servicio cada apagado mandaba ~10 mails.
+  incident_preference = "PER_POLICY"
+
+  # Cada entorno tiene su propio estado: el workspace de OpenTofu/Terraform con su nombre (ver README). Con el
+  # workspace equivocado, el plan reemplazaría todo lo del otro entorno por lo de este: mejor que falle acá.
+  lifecycle {
+    precondition {
+      condition     = terraform.workspace == var.environment
+      error_message = "El workspace es \"${terraform.workspace}\" y environment es \"${var.environment}\". Antes del plan: tofu workspace select ${var.environment} (o terraform workspace select)."
+    }
+  }
 }
 
 # --- Desde afuera ---------------------------------------------------------------------------------------------------
@@ -37,7 +48,7 @@ resource "newrelic_nrql_alert_condition" "synthetic_failure" {
   aggregation_timer  = 60
 
   # Si un monitor deja de tener resultados (lo pausaron), no es una caída.
-  violation_time_limit_seconds = 86400
+  violation_time_limit_seconds = local.incident_time_limit
 }
 
 # --- Desde cada servicio --------------------------------------------------------------------------------------------
@@ -69,7 +80,7 @@ resource "newrelic_nrql_alert_condition" "service_not_reporting" {
   expiration_duration            = 180
   open_violation_on_expiration   = true
   close_violations_on_expiration = false
-  violation_time_limit_seconds   = 86400
+  violation_time_limit_seconds   = local.incident_time_limit
 }
 
 # Más del 5% de los pedidos terminan en error (5xx o excepción) durante 5 minutos. Los 4xx no cuentan
@@ -101,7 +112,7 @@ resource "newrelic_nrql_alert_condition" "error_rate" {
   aggregation_window           = 60
   aggregation_method           = "event_timer"
   aggregation_timer            = 60
-  violation_time_limit_seconds = 86400
+  violation_time_limit_seconds = local.incident_time_limit
 }
 
 # El 95% de los pedidos web tarda más de 3 segundos durante 5 minutos. Suele ser un servicio de abajo que no
@@ -127,7 +138,7 @@ resource "newrelic_nrql_alert_condition" "slow_responses" {
   aggregation_window           = 60
   aggregation_method           = "event_timer"
   aggregation_timer            = 60
-  violation_time_limit_seconds = 86400
+  violation_time_limit_seconds = local.incident_time_limit
 }
 
 # Los linteos en segundo plano (Redis Streams) que fallan: el snippet queda en PENDING hasta que se reintente.
@@ -152,7 +163,7 @@ resource "newrelic_nrql_alert_condition" "background_failures" {
   aggregation_window           = 300
   aggregation_method           = "event_timer"
   aggregation_timer            = 60
-  violation_time_limit_seconds = 86400
+  violation_time_limit_seconds = local.incident_time_limit
 }
 
 # --- Desde los datos -----------------------------------------------------------------------------------------------
@@ -187,7 +198,7 @@ resource "newrelic_nrql_alert_condition" "snippets_vanished" {
   aggregation_method           = "event_flow"
   aggregation_delay            = 120
   slide_by                     = 60
-  violation_time_limit_seconds = 86400
+  violation_time_limit_seconds = local.incident_time_limit
 }
 
 # Un usuario con snippets en la base a quien permission-service no le devuelve ninguno: los ve vacíos aunque estén.
@@ -213,7 +224,7 @@ resource "newrelic_nrql_alert_condition" "snippets_hidden" {
   aggregation_window           = 60
   aggregation_method           = "event_timer"
   aggregation_timer            = 60
-  violation_time_limit_seconds = 86400
+  violation_time_limit_seconds = local.incident_time_limit
 }
 
 # La saturación del segundo plano: los mensajes de un stream de Redis que esperan (sin entregar, o entregados y sin
@@ -239,7 +250,7 @@ resource "newrelic_nrql_alert_condition" "stream_backlog" {
   aggregation_window           = 60
   aggregation_method           = "event_flow"
   aggregation_delay            = 120
-  violation_time_limit_seconds = 86400
+  violation_time_limit_seconds = local.incident_time_limit
 }
 
 # --- Desde la VM ----------------------------------------------------------------------------------------------------
@@ -269,7 +280,7 @@ resource "newrelic_nrql_alert_condition" "host_not_reporting" {
   expiration_duration            = 300
   open_violation_on_expiration   = true
   close_violations_on_expiration = false
-  violation_time_limit_seconds   = 86400
+  violation_time_limit_seconds   = local.incident_time_limit
 }
 
 # Un container de Swarm cerca de su límite de memoria. Al llegar, Docker lo mata (OOM) y Swarm levanta otro: por ejemplo
@@ -301,7 +312,7 @@ resource "newrelic_nrql_alert_condition" "container_memory" {
   aggregation_window           = 60
   aggregation_method           = "event_timer"
   aggregation_timer            = 60
-  violation_time_limit_seconds = 86400
+  violation_time_limit_seconds = local.incident_time_limit
 }
 
 # Swarm no reinicia un container: crea uno nuevo. Un servicio con más de 2 containers distintos en 10 minutos se está
@@ -329,7 +340,7 @@ resource "newrelic_nrql_alert_condition" "container_churn" {
   slide_by                     = 60
   aggregation_method           = "event_timer"
   aggregation_timer            = 60
-  violation_time_limit_seconds = 86400
+  violation_time_limit_seconds = local.incident_time_limit
 }
 
 resource "newrelic_nrql_alert_condition" "host_resources" {
@@ -359,7 +370,7 @@ resource "newrelic_nrql_alert_condition" "host_resources" {
   aggregation_window           = 60
   aggregation_method           = "event_timer"
   aggregation_timer            = 60
-  violation_time_limit_seconds = 86400
+  violation_time_limit_seconds = local.incident_time_limit
 }
 
 # --- A quién se avisa -----------------------------------------------------------------------------------------------

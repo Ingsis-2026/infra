@@ -3,6 +3,7 @@
 #
 #   export NEW_RELIC_API_KEY=NRAK-...      # una User key de la cuenta (no la license key)
 #   terraform init
+#   terraform workspace select -or-create dev     # cada entorno, en su workspace (su propio estado)
 #   terraform apply -var-file=dev.tfvars
 #
 # Ver README.md de esta carpeta.
@@ -40,4 +41,8 @@ locals {
   # por los atributos que le agrega a todo lo que manda (NRIA_CUSTOM_ATTRIBUTES).
   host         = "snippet-searcher-${var.environment}"
   infra_filter = "stack = 'snippet' AND env = '${var.environment}'"
+
+  # Cuánto puede durar un incidente abierto antes de que New Relic lo cierre solo (y lo vuelva a abrir, con otro mail,
+  # si sigue fallando): 30 días, el máximo. Con la VM apagada días enteros, menos que eso repetía los mails cada día.
+  incident_time_limit = 2592000
 }
