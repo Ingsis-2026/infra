@@ -11,11 +11,11 @@ Levanta **Snippet Searcher** entero con Docker Compose: el reverse proxy, la UI,
 | `permission-service` | `ghcr.io/ingsis-2026/permission-service` | `8081` |
 | `permission-db` | `postgres:17` | `5433` |
 | `language-service` | `ghcr.io/ingsis-2026/language-service` | `8082` |
-| `asset-service` | `ghcr.io/austral-ingsis/snippet-asset-service` | `8083` |
-| `azurite` | `mcr.microsoft.com/azure-storage/azurite` | `10000` |
+| `asset-service` | `ghcr.io/austral-ingsis/snippet-asset-service:main.18` | `8083` |
+| `azurite` | `mcr.microsoft.com/azure-storage/azurite:3.37.0` | `10000` |
 | `redis` | `redis:7` | `6379` |
 
-El código de cada snippet lo guarda `snippet-service` en `asset-service`, el [servicio de assets de la cátedra](https://github.com/austral-ingsis/asset-service), y la metadata queda en `snippet-db`. `asset-service` es el único que habla con Azurite, el emulador de Azure Blob Storage, con la cuenta de desarrollo que trae Azurite (`devstoreaccount1`), que es pública. Su imagen no es nuestra: no tiene tags `dev`/`prod`, solo `latest`. Su API está en http://localhost:8083/swagger-ui.
+El código de cada snippet lo guarda `snippet-service` en `asset-service`, el [servicio de assets de la cátedra](https://github.com/austral-ingsis/asset-service), y la metadata queda en `snippet-db`. `asset-service` es el único que habla con Azurite, el emulador de Azure Blob Storage, con la cuenta de desarrollo que trae Azurite (`devstoreaccount1`), que es pública. Su imagen no es nuestra: no tiene versiones ni tags `dev`/`prod`, solo un tag `main.<número>` por cada build de la cátedra; usamos uno fijo, para que no cambie sin que nos enteremos. Su API está en http://localhost:8083/swagger-ui.
 
 Redis tiene el stream `lint-requests`: cuando un usuario cambia sus reglas de lint, `snippet-service` encola ahí cada uno de sus snippets y los lintea en segundo plano (US15). Corre con AOF (`--appendonly yes`) para que lo encolado sobreviva a un reinicio.
 

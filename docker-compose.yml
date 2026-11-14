@@ -67,9 +67,10 @@ services:
 
   # El asset-service de la cátedra: guarda el código de los snippets en Azurite. snippet-service le
   # habla por HTTP y es el único que habla con Azurite. Escucha en el 8080; su health está en el 9090.
-  # La imagen no es nuestra: la publica austral-ingsis y no tiene tags dev/prod, solo latest.
+  # La imagen no es nuestra: la publica austral-ingsis, sin versiones ni tags dev/prod. Cada build es un tag
+  # main.<número>; la misma que en docker-stack.yml.
   asset-service:
-    image: ghcr.io/austral-ingsis/snippet-asset-service:latest
+    image: ghcr.io/austral-ingsis/snippet-asset-service:main.18
     ports:
       - "${ASSET_SERVICE_PORT:-8083}:8080"
     environment:
@@ -84,7 +85,7 @@ services:
   # Emulador de Azure Blob Storage: ahí guarda asset-service el código de los snippets. Solo el
   # servicio de blobs, escuchando en 0.0.0.0 para que se llegue desde los otros containers.
   azurite:
-    image: mcr.microsoft.com/azure-storage/azurite
+    image: mcr.microsoft.com/azure-storage/azurite:3.37.0
     command: azurite-blob --blobHost 0.0.0.0 --blobPort 10000 --location /data
     ports:
       - "10000:10000"

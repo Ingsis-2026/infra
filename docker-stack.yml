@@ -57,6 +57,15 @@ x-light-deploy: &light-deploy
     limits:
       memory: 128M
 
+# Docker guarda el stdout de cada container en un archivo que, por defecto, crece sin límite: con el tiempo, los
+# logs de nginx y de los servicios Java llenan el disco de la VM. Así cada container guarda a lo sumo 3 archivos
+# de 10 MB y descarta los más viejos. docker service logs sigue andando igual.
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: "3"
+
 # Sin healthcheck Swarm da por lista una tarea apenas arranca el container, y con start-first baja la vieja ahí:
 # como un servicio Java tarda más de un minuto en levantar, cada deploy dejaba la API en 502 ese rato.
 # Con esto la tarea vieja sigue atendiendo hasta que la nueva responde. Solo mira que el servidor conteste, con
@@ -75,6 +84,7 @@ services:
   # por el 443 sirve la UI en / y snippet-service en /api. Las rutas están en nginx/locations.conf.
   proxy:
     image: nginx:1.27-alpine
+    logging: *logging
     ports:
       - "80:80"
       - "443:443"
@@ -98,8 +108,10 @@ services:
         constraints: [ node.role == manager ]
 
   # Mantiene <DUCKDNS_SUBDOMAIN>.duckdns.org apuntando a la IP pública de esta VM: la avisa cada 5 minutos.
+  # linuxserver no publica tags por versión de DuckDNS: <commit>-ls<build> es una build puntual de la imagen.
   duckdns:
-    image: lscr.io/linuxserver/duckdns:latest
+    image: lscr.io/linuxserver/duckdns:8f533707-ls97
+    logging: *logging
     environment:
       SUBDOMAINS: ${DUCKDNS_SUBDOMAIN}
       # Las imágenes de linuxserver leen la variable TOKEN del archivo que diga FILE__TOKEN.
@@ -116,6 +128,7 @@ services:
 
   snippet-service:
     image: ghcr.io/ingsis-2026/snippet-service:${IMAGE_TAG}
+    logging: *logging
     environment:
       <<: *newrelic-env
       NEW_RELIC_APP_NAME: snippet-service-${IMAGE_TAG}
@@ -148,6 +161,7 @@ services:
 
   snippet-db:
     image: postgres:17
+    logging: *logging
     environment:
       POSTGRES_DB: snippet
       POSTGRES_USER: snippet
@@ -165,9 +179,11 @@ services:
     deploy: *db-deploy
 
   # El asset-service de la cátedra: guarda el código de los snippets en Azurite. Sin "ports": no
-  # tiene autenticación, así que solo se llega desde snippet-net. Su imagen solo tiene latest.
+  # tiene autenticación, así que solo se llega desde snippet-net. Su imagen no tiene versiones: cada build de la
+  # cátedra es un tag main.<número>. main.18 es la que era latest cuando se fijó (el mismo digest).
   asset-service:
-    image: ghcr.io/austral-ingsis/snippet-asset-service:latest
+    image: ghcr.io/austral-ingsis/snippet-asset-service:main.18
+    logging: *logging
     environment:
       <<: *newrelic-env
       NEW_RELIC_APP_NAME: asset-service-${IMAGE_TAG}
@@ -187,7 +203,8 @@ services:
   # Donde asset-service guarda el código de los snippets. Sin "ports": solo se llega desde snippet-net,
   # como a las bases.
   azurite:
-    image: mcr.microsoft.com/azure-storage/azurite
+    image: mcr.microsoft.com/azure-storage/azurite:3.37.0
+    logging: *logging
     command: azurite-blob --blobHost 0.0.0.0 --blobPort 10000 --location /data
     volumes:
       - azurite-data:/data
@@ -198,6 +215,7 @@ services:
   # porque lo encolado vive en un volumen local al nodo.
   redis:
     image: redis:7
+    logging: *logging
     command: redis-server --appendonly yes
     volumes:
       - redis-data:/data
@@ -206,6 +224,7 @@ services:
 
   permission-service:
     image: ghcr.io/ingsis-2026/permission-service:${IMAGE_TAG}
+    logging: *logging
     environment:
       <<: *newrelic-env
       NEW_RELIC_APP_NAME: permission-service-${IMAGE_TAG}
@@ -226,6 +245,7 @@ services:
 
   permission-db:
     image: postgres:17
+    logging: *logging
     environment:
       POSTGRES_DB: permission
       POSTGRES_USER: permission
@@ -243,6 +263,7 @@ services:
 
   language-service:
     image: ghcr.io/ingsis-2026/language-service:${IMAGE_TAG}
+    logging: *logging
     environment:
       <<: *newrelic-env
       NEW_RELIC_APP_NAME: language-service-${IMAGE_TAG}
