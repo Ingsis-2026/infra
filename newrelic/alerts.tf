@@ -117,7 +117,7 @@ resource "newrelic_nrql_alert_condition" "error_rate" {
 }
 
 # El 95% de los pedidos web tarda más de 3 segundos durante 5 minutos. Suele ser un servicio de abajo que no
-# responde: snippet-service espera sin timeout a los que llama.
+# responde a tiempo: snippet-service espera hasta el timeout de cada cliente (10 s, 30 s para language-service).
 resource "newrelic_nrql_alert_condition" "slow_responses" {
   policy_id   = newrelic_alert_policy.snippet_searcher.id
   name        = "Respuestas lentas"
