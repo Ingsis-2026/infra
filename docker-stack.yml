@@ -282,8 +282,8 @@ services:
     networks: [ snippet-net ]
     deploy: *db-deploy
 
-  # La cola de snippets a lintear (US15). Sin "ports", como las bases; con AOF y en el manager,
-  # porque lo encolado vive en un volumen local al nodo.
+  # Las colas de snippets a lintear (lint-requests, US15) y a formatear (format-requests, US12). Sin "ports",
+  # como las bases; con AOF y en el manager, porque lo encolado vive en un volumen local al nodo.
   redis:
     image: redis:7
     logging: *logging

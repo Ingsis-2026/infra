@@ -2,6 +2,8 @@
 
 Levanta **Snippet Searcher** entero con Docker Compose: el reverse proxy, la UI, los tres servicios, sus bases de datos, el asset-service de la cátedra con su Azurite, y Redis.
 
+El diagrama de componentes y los diagramas de secuencia de los flujos principales están en [`docs/arquitectura.md`](docs/arquitectura.md).
+
 | Container | Imagen | Puerto en tu máquina |
 |---|---|---|
 | `proxy` | `nginx:1.27-alpine` | `80` |
@@ -17,7 +19,7 @@ Levanta **Snippet Searcher** entero con Docker Compose: el reverse proxy, la UI,
 
 El código de cada snippet lo guarda `snippet-service` en `asset-service`, el [servicio de assets de la cátedra](https://github.com/austral-ingsis/asset-service), y la metadata queda en `snippet-db`. `asset-service` es el único que habla con Azurite, el emulador de Azure Blob Storage, con la cuenta de desarrollo que trae Azurite (`devstoreaccount1`), que es pública. Su imagen no es nuestra: no tiene versiones ni tags `dev`/`prod`, solo un tag `main.<número>` por cada build de la cátedra; usamos uno fijo, para que no cambie sin que nos enteremos. Su API está en http://localhost:8083/swagger-ui.
 
-Redis tiene el stream `lint-requests`: cuando un usuario cambia sus reglas de lint, `snippet-service` encola ahí cada uno de sus snippets y los lintea en segundo plano (US15). Corre con AOF (`--appendonly yes`) para que lo encolado sobreviva a un reinicio.
+Redis tiene dos streams, que escribe y lee `snippet-service`: `lint-requests`, donde encola cada snippet a lintear en segundo plano (US15: al crearlo, al editarlo o cuando su owner cambia las reglas de lint), y `format-requests`, donde encola los snippets de un usuario cuando cambia sus reglas de formato (US12). Corre con AOF (`--appendonly yes`) para que lo encolado sobreviva a un reinicio.
 
 Cada servicio tiene su propio `Dockerfile` en su repo. El CD de cada uno construye la imagen y la publica en `ghcr.io/ingsis-2026`, y este compose la baja de ahí. Adentro de la red de Docker, los servicios se llaman por nombre (por ejemplo `http://permission-service:8080`).
 
