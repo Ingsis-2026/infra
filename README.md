@@ -145,6 +145,8 @@ Y desde cualquier lado: `https://<subdominio>.duckdns.org/api/actuator/health`.
 
 En las VMs, los cuatro servicios Java (los nuestros y `asset-service`) corren con el agente de New Relic y `deploy.sh` levanta al lado del stack un `newrelic-infra` que mide la VM y cada container. Los monitores sintéticos, las alertas y el dashboard están como código en [`newrelic/`](newrelic/README.md), junto con los puntos de falla de la arquitectura y cómo probar que las alertas saltan.
 
+nginx le pone a cada pedido un header `X-Request-Id` (lo genera siempre él, aunque el pedido traiga uno), se lo pasa al servicio y lo devuelve en la respuesta. Los servicios de Spring lo ponen en sus logs, así un pedido se sigue desde nginx hasta el servicio que falló. El log de nginx es un JSON por pedido, con el id, el status, el tiempo de respuesta y el container al que fue (`docker service logs snippet_proxy`).
+
 ## CI/CD
 
 - `ci.yml` valida en cada push y PR:
