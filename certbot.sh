@@ -1,7 +1,8 @@
 #!/usr/bin/env sh
-# El certificado HTTPS de <DUCKDNS_SUBDOMAIN>.duckdns.org. certbot es un container que corre una vez y termina.
+# El certificado HTTPS de <DUCKDNS_SUBDOMAIN>.duckdns.org. Acá certbot es un container que corre una vez y termina.
 # Como deploy.sh, corre en el runner contra el docker de la VM (un docker context). Lo llama deploy.sh en cada
-# deploy, en dos pasos:
+# deploy, en dos pasos (las renovaciones, en cambio, las hace solo el servicio certbot de docker-stack.yml, que
+# usa la misma imagen y los mismos volúmenes, aunque no haya deploys):
 #
 #   sh certbot.sh <dev|prod> self-signed
 #                               antes del deploy. nginx no arranca sin un certificado para el 443, y el de

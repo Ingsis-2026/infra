@@ -1,13 +1,31 @@
 # El reverse proxy en las VMs (docker-stack.yml). La imagen de nginx reemplaza ${DOMAIN} al arrancar
 # (<sub>.duckdns.org, armado desde DUCKDNS_SUBDOMAIN) y deja en paz las variables propias de nginx.
 
+# El log de cada pedido, un JSON por línea (lo usa locations.conf). Con escape=json, un valor que no existe queda
+# vacío: por eso los del upstream van entre comillas. upstream es el container al que fue el pedido.
+log_format snippet_json escape=json
+    '{"time":"$time_iso8601","request_id":"$request_id","remote_addr":"$remote_addr",'
+    '"method":"$request_method","uri":"$request_uri","status":$status,"bytes_sent":$body_bytes_sent,'
+    '"request_time":$request_time,"upstream":"$upstream_addr","upstream_status":"$upstream_status",'
+    '"upstream_response_time":"$upstream_response_time","user_agent":"$http_user_agent"}';
+
 # HTTP: solo para que Let's Encrypt valide el dominio. Todo lo demás se manda a HTTPS.
 server {
     listen 80;
     server_name ${DOMAIN};
     server_tokens off;
+    access_log /var/log/nginx/access.log snippet_json;
 
-    # certbot.sh deja acá el archivo que Let's Encrypt viene a buscar para comprobar que el dominio es nuestro.
+    # El healthcheck del container (docker-stack.yml): solo dice que nginx atiende. Va por el 80 porque es HTTP
+    # plano y no depende del certificado.
+    location = /nginx-health {
+        access_log off;
+        default_type text/plain;
+        return 200 "ok";
+    }
+
+    # certbot (certbot.sh o el servicio del stack) deja acá el archivo que Let's Encrypt viene a buscar para
+    # comprobar que el dominio es nuestro.
     location /.well-known/acme-challenge/ {
         root /var/www/certbot;
     }
@@ -23,7 +41,8 @@ server {
     server_name ${DOMAIN};
     server_tokens off;
 
-    # El de Let's Encrypt, que consigue certbot.sh. Hasta entonces, uno autofirmado (certbot.sh self-signed).
+    # El de Let's Encrypt, que consigue certbot.sh y renueva el servicio certbot. Hasta entonces, uno autofirmado
+    # (certbot.sh self-signed). nginx toma uno renovado cuando se recarga (ver el proxy en docker-stack.yml).
     ssl_certificate /etc/letsencrypt/live/${DOMAIN}/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/${DOMAIN}/privkey.pem;
 

@@ -79,21 +79,24 @@ docker config ls -q -f name=snippet-nginx- | xargs -r docker config rm > /dev/nu
 # --privileged) y Swarm no admite ninguna de esas opciones: dentro del stack, con cgroups v2, ve la memoria de
 # todos los containers en 0. Por lo mismo no puede leer un Docker Secret: recibe la key del workflow, en este
 # deploy. Si la key no llega (un deploy a mano), el agente que ya está corriendo queda como está.
-# Los paths de -v son de la VM: los resuelve el docker de allá, no el de quien corre este script.
+# Los paths de -v son de la VM: los resuelve el docker de allá, no el de quien corre este script. Las --log-opt
+# son la misma rotación de logs que los servicios del stack (x-logging). La versión es fija, como las imágenes del
+# stack: con latest, cada deploy podía traer una versión distinta del agente sin que nadie se entere.
 if [ -n "${NEW_RELIC_LICENSE_KEY:-}" ]; then
     docker rm -f newrelic-infra > /dev/null 2>&1 || true
     docker run -d --name newrelic-infra --restart unless-stopped \
         --network host --cgroupns host --pid host --privileged \
-        --memory 256m \
+        --memory 256m --log-opt max-size=10m --log-opt max-file=3 \
         -v /:/host:ro -v /var/run/docker.sock:/var/run/docker.sock \
         -e NRIA_LICENSE_KEY="$NEW_RELIC_LICENSE_KEY" \
         -e NRIA_DISPLAY_NAME="snippet-searcher-$IMAGE_TAG" \
         -e NRIA_CUSTOM_ATTRIBUTES="{\"env\":\"$IMAGE_TAG\",\"stack\":\"snippet\"}" \
-        newrelic/infrastructure:latest > /dev/null
+        newrelic/infrastructure:2.0.2 > /dev/null
     echo "Agente de infraestructura de New Relic corriendo (newrelic-infra)."
 fi
 
-# Si falla (por ejemplo, DuckDNS todavía no apunta a esta VM), el stack queda andando con el certificado
+# El primer certificado. Las renovaciones ya no dependen de que haya un deploy: las hace el servicio certbot del
+# stack. Si falla (por ejemplo, DuckDNS todavía no apunta a esta VM), el stack queda andando con el certificado
 # autofirmado y se reintenta en el próximo deploy, o a mano con: sh certbot.sh <dev|prod> (ver el README)
 if ! sh ./certbot.sh "$env_name"; then
     echo "No se pudo conseguir el certificado de Let's Encrypt: nginx sigue con el autofirmado." >&2

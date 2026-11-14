@@ -2,6 +2,8 @@
 
 Levanta **Snippet Searcher** entero con Docker Compose: el reverse proxy, la UI, los tres servicios, sus bases de datos, el asset-service de la cátedra con su Azurite, y Redis.
 
+El diagrama de componentes y los diagramas de secuencia de los flujos principales están en [`docs/arquitectura.md`](docs/arquitectura.md).
+
 | Container | Imagen | Puerto en tu máquina |
 |---|---|---|
 | `proxy` | `nginx:1.27-alpine` | `80` |
@@ -11,13 +13,13 @@ Levanta **Snippet Searcher** entero con Docker Compose: el reverse proxy, la UI,
 | `permission-service` | `ghcr.io/ingsis-2026/permission-service` | `8081` |
 | `permission-db` | `postgres:17` | `5433` |
 | `language-service` | `ghcr.io/ingsis-2026/language-service` | `8082` |
-| `asset-service` | `ghcr.io/austral-ingsis/snippet-asset-service` | `8083` |
-| `azurite` | `mcr.microsoft.com/azure-storage/azurite` | `10000` |
+| `asset-service` | `ghcr.io/austral-ingsis/snippet-asset-service:main.18` | `8083` |
+| `azurite` | `mcr.microsoft.com/azure-storage/azurite:3.37.0` | `10000` |
 | `redis` | `redis:7` | `6379` |
 
-El código de cada snippet lo guarda `snippet-service` en `asset-service`, el [servicio de assets de la cátedra](https://github.com/austral-ingsis/asset-service), y la metadata queda en `snippet-db`. `asset-service` es el único que habla con Azurite, el emulador de Azure Blob Storage, con la cuenta de desarrollo que trae Azurite (`devstoreaccount1`), que es pública. Su imagen no es nuestra: no tiene tags `dev`/`prod`, solo `latest`. Su API está en http://localhost:8083/swagger-ui.
+El código de cada snippet lo guarda `snippet-service` en `asset-service`, el [servicio de assets de la cátedra](https://github.com/austral-ingsis/asset-service), y la metadata queda en `snippet-db`. `asset-service` es el único que habla con Azurite, el emulador de Azure Blob Storage, con la cuenta de desarrollo que trae Azurite (`devstoreaccount1`), que es pública. Su imagen no es nuestra: no tiene versiones ni tags `dev`/`prod`, solo un tag `main.<número>` por cada build de la cátedra; usamos uno fijo, para que no cambie sin que nos enteremos. Su API está en http://localhost:8083/swagger-ui.
 
-Redis tiene el stream `lint-requests`: cuando un usuario cambia sus reglas de lint, `snippet-service` encola ahí cada uno de sus snippets y los lintea en segundo plano (US15). Corre con AOF (`--appendonly yes`) para que lo encolado sobreviva a un reinicio.
+Redis tiene dos streams, que escribe y lee `snippet-service`: `lint-requests`, donde encola cada snippet a lintear en segundo plano (US15: al crearlo, al editarlo o cuando su owner cambia las reglas de lint), y `format-requests`, donde encola los snippets de un usuario cuando cambia sus reglas de formato (US12). Corre con AOF (`--appendonly yes`) para que lo encolado sobreviva a un reinicio.
 
 Cada servicio tiene su propio `Dockerfile` en su repo. El CD de cada uno construye la imagen y la publica en `ghcr.io/ingsis-2026`, y este compose la baja de ahí. Adentro de la red de Docker, los servicios se llaman por nombre (por ejemplo `http://permission-service:8080`).
 
@@ -67,8 +69,10 @@ Cada VM es un Swarm de un solo nodo (manager) que corre el stack `snippet`, defi
 - **Solo el proxy publica puertos**, el `80` y el `443`. Los servicios, las bases, `asset-service`, Azurite y Redis solo se alcanzan desde adentro del stack. `asset-service` no tiene autenticación, así que no puede quedar expuesto.
 - **HTTPS** con un certificado de Let's Encrypt para el dominio de DuckDNS. Por el `80` solo se valida el dominio; todo lo demás se redirige a HTTPS.
 - **DuckDNS** mantiene el dominio apuntando a la IP pública de la VM, aunque cambie.
+- **El certificado se renueva solo**: el servicio `certbot` del stack corre `certbot renew` al arrancar y cada 12 horas, y nginx se recarga cada 6 horas para tomar el nuevo. No hace falta un deploy.
 - Swarm reinicia lo que se cae.
-- Si una imagen nueva no arranca, Swarm vuelve sola a la anterior.
+- Si una imagen nueva no arranca o no pasa su healthcheck, Swarm vuelve sola a la anterior.
+- Los logs de cada container rotan (3 archivos de 10 MB), para que no llenen el disco.
 
 | Entorno | Dominio |
 |---|---|
@@ -116,10 +120,10 @@ La contraseña de una base además hay que cambiarla adentro de postgres (`ALTER
   2. despliega el stack;
   3. corre `certbot.sh`, que pide el certificado a Let's Encrypt y recarga nginx. Let's Encrypt valida el dominio por el `80`, por eso se pide con nginx ya andando.
 
-  certbot es un container que corre una vez y termina: si ya hay un certificado y le faltan más de 30 días para vencer, no pide nada; si le falta menos, lo renueva.
+  Acá certbot es un container que corre una vez y termina: si ya hay un certificado y le faltan más de 30 días para vencer, no pide nada; si le falta menos, lo renueva. Las renovaciones no dependen de esto: las hace el servicio `certbot` del stack, que deja el certificado nuevo en el mismo volumen; nginx lo toma en su próxima recarga (cada 6 horas).
 - **Cada servicio y la UI:** su CD actualiza solo su servicio con `docker service update --image ...:sha-xxxxxxxx`.
 
-Si el pedido a Let's Encrypt falla (por ejemplo, porque DuckDNS todavía no apunta a la VM), el deploy no falla: queda el autofirmado (el browser muestra un aviso) y se reintenta en el próximo deploy, o a mano:
+Si el pedido a Let's Encrypt falla (por ejemplo, porque DuckDNS todavía no apunta a la VM), el deploy no falla: queda el autofirmado (el browser muestra un aviso) y se reintenta en el próximo deploy, o a mano (el servicio `certbot` no lo pide: solo renueva uno que ya existe):
 
 ```sh
 # desde tu máquina, parado en este repo, con un context que apunte a la VM
@@ -137,6 +141,7 @@ docker service ps snippet_snippet-service   # tareas, imagen y errores
 docker service logs -f snippet_snippet-service
 docker service logs -f snippet_proxy        # los pedidos que entran y a dónde van
 docker service logs snippet_duckdns         # si DuckDNS aceptó la IP ("OK")
+docker service logs snippet_certbot         # las renovaciones del certificado
 ```
 
 Y desde cualquier lado: `https://<subdominio>.duckdns.org/api/actuator/health`.
@@ -144,6 +149,8 @@ Y desde cualquier lado: `https://<subdominio>.duckdns.org/api/actuator/health`.
 ## Observabilidad (New Relic)
 
 En las VMs, los cuatro servicios Java (los nuestros y `asset-service`) corren con el agente de New Relic y `deploy.sh` levanta al lado del stack un `newrelic-infra` que mide la VM y cada container. Los monitores sintéticos, las alertas y el dashboard están como código en [`newrelic/`](newrelic/README.md), junto con los puntos de falla de la arquitectura y cómo probar que las alertas saltan.
+
+nginx le pone a cada pedido un header `X-Request-Id` (lo genera siempre él, aunque el pedido traiga uno), se lo pasa al servicio y lo devuelve en la respuesta. Los servicios de Spring lo ponen en sus logs, así un pedido se sigue desde nginx hasta el servicio que falló. El log de nginx es un JSON por pedido, con el id, el status, el tiempo de respuesta y el container al que fue (`docker service logs snippet_proxy`).
 
 ## CI/CD
 
