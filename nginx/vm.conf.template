@@ -14,8 +14,18 @@ server {
     listen 80;
     server_name ${DOMAIN};
     server_tokens off;
+    access_log /var/log/nginx/access.log snippet_json;
 
-    # certbot.sh deja acá el archivo que Let's Encrypt viene a buscar para comprobar que el dominio es nuestro.
+    # El healthcheck del container (docker-stack.yml): solo dice que nginx atiende. Va por el 80 porque es HTTP
+    # plano y no depende del certificado.
+    location = /nginx-health {
+        access_log off;
+        default_type text/plain;
+        return 200 "ok";
+    }
+
+    # certbot (certbot.sh o el servicio del stack) deja acá el archivo que Let's Encrypt viene a buscar para
+    # comprobar que el dominio es nuestro.
     location /.well-known/acme-challenge/ {
         root /var/www/certbot;
     }
@@ -31,7 +41,8 @@ server {
     server_name ${DOMAIN};
     server_tokens off;
 
-    # El de Let's Encrypt, que consigue certbot.sh. Hasta entonces, uno autofirmado (certbot.sh self-signed).
+    # El de Let's Encrypt, que consigue certbot.sh y renueva el servicio certbot. Hasta entonces, uno autofirmado
+    # (certbot.sh self-signed). nginx toma uno renovado cuando se recarga (ver el proxy en docker-stack.yml).
     ssl_certificate /etc/letsencrypt/live/${DOMAIN}/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/${DOMAIN}/privkey.pem;
 

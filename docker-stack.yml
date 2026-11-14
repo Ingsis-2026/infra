@@ -3,7 +3,8 @@
 # no es secreto está versionado en env/<entorno>.env, y lo secreto son Docker Secrets (al final de este archivo),
 # que Swarm guarda cifrados y le monta a cada servicio como un archivo en /run/secrets.
 # Diferencias con el compose: sin depends_on ni restart (Swarm reinicia lo que se cae con restart_policy),
-# el único que publica puertos es el reverse proxy (80 y 443, con HTTPS) y DuckDNS mantiene el dominio apuntando a la VM.
+# el único que publica puertos es el reverse proxy (80 y 443, con HTTPS), DuckDNS mantiene el dominio apuntando a la VM
+# y certbot renueva el certificado.
 
 # El agente de New Relic de los servicios Java (los nuestros y el asset-service de la cátedra). Cada servicio agrega
 # su NEW_RELIC_APP_NAME, <servicio>-<entorno>: IMAGE_TAG es dev o prod, así cada entorno es otra aplicación en New Relic.
@@ -96,16 +97,69 @@ services:
         target: /etc/nginx/templates/default.conf.template
       - source: nginx-locations
         target: /etc/nginx/snippet/locations.conf
-    # El certificado lo escribe certbot.sh (un container de certbot que corre una vez), nginx solo lo lee.
+    # El certificado lo escriben certbot.sh (el primero, en el deploy) y el servicio certbot (las renovaciones);
+    # nginx solo lo lee.
     volumes:
       - letsencrypt:/etc/letsencrypt
       - acme-challenge:/var/www/certbot
+    # nginx lee el certificado una sola vez, al arrancar o al recargarse. certbot renueva solo, pero desde su
+    # container no puede recargar a nginx (necesitaría el socket de docker), así que nginx se recarga solo cada
+    # 6 horas: si certbot dejó uno nuevo, lo toma; si no, no cambia nada. La recarga no corta conexiones.
+    # El entrypoint de la imagen (el envsubst del template, entre otros) solo corre si el comando es "nginx": por
+    # eso se lo llama a mano, después de dejar el loop corriendo de fondo.
+    entrypoint: [ "/bin/sh", "-c" ]
+    command: [ "while :; do sleep 21600; nginx -s reload; done & exec /docker-entrypoint.sh nginx -g 'daemon off;'" ]
+    # Le pega a /nginx-health por el 80 (ver vm.conf.template): sin esto, en un update Swarm daría por buena
+    # una config de nginx que no levanta y bajaría la vieja.
+    healthcheck:
+      test: [ "CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/nginx-health" ]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     networks: [ snippet-net ]
     deploy:
       <<: *light-deploy
       # Los certificados están en un volumen local al nodo, como las bases.
       placement:
         constraints: [ node.role == manager ]
+
+  # Renueva el certificado de Let's Encrypt. El primero lo pide certbot.sh en el deploy, que deja en
+  # renewal/<dominio>.conf cómo se pidió (webroot en /var/www/certbot), y certbot renew lo reusa. Corre al arrancar
+  # (las VMs pasan la mayor parte del tiempo apagadas: si el certificado venció o está por vencer, se renueva
+  # apenas se prende) y después cada 12 horas. Solo pide uno nuevo si al actual le quedan menos de 30 días, y si
+  # todavía no hay ninguno (solo el autofirmado) no hace nada. Si falla (por ejemplo, nginx todavía no levantó
+  # y Let's Encrypt no llega al 80), reintenta en una hora. El certificado nuevo lo toma nginx en su próxima
+  # recarga (ver el proxy). Es la misma versión de certbot que usa certbot.sh.
+  certbot:
+    image: certbot/certbot:v3.0.1
+    logging: *logging
+    entrypoint: [ "/bin/sh", "-c" ]
+    # $$ es un $ para el shell: docker stack deploy reemplaza los ${...} del archivo. El trap y el "sleep & wait"
+    # son para que Swarm lo pueda frenar al toque: si no, el sh no atiende el SIGTERM hasta que termina el sleep.
+    command:
+      - |
+        trap 'exit 0' TERM
+        while :; do
+          if certbot renew --no-random-sleep-on-renew; then pause=43200; else pause=3600; fi
+          sleep $$pause & wait $$!
+        done
+    volumes:
+      - letsencrypt:/etc/letsencrypt
+      - acme-challenge:/var/www/certbot
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: any
+      # Con start-first podría haber dos certbot a la vez peleándose por el lock de /etc/letsencrypt.
+      update_config:
+        order: stop-first
+      # Los mismos volúmenes locales al nodo que el proxy.
+      placement:
+        constraints: [ node.role == manager ]
+      resources:
+        limits:
+          memory: 128M
 
   # Mantiene <DUCKDNS_SUBDOMAIN>.duckdns.org apuntando a la IP pública de esta VM: la avisa cada 5 minutos.
   # linuxserver no publica tags por versión de DuckDNS: <commit>-ls<build> es una build puntual de la imagen.
@@ -123,6 +177,15 @@ services:
   # La UI: su imagen es un nginx que sirve los archivos estáticos. No publica puertos: se llega por el proxy.
   printscript-ui:
     image: ghcr.io/ingsis-2026/printscript-ui:${IMAGE_TAG}
+    logging: *logging
+    # Que nginx sirva el index.html. Como en el proxy: con start-first, sin healthcheck una imagen rota
+    # reemplazaría a la buena sin que Swarm se entere.
+    healthcheck:
+      test: [ "CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/" ]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     networks: [ snippet-net ]
     deploy: *light-deploy
 
@@ -208,6 +271,14 @@ services:
     command: azurite-blob --blobHost 0.0.0.0 --blobPort 10000 --location /data
     volumes:
       - azurite-data:/data
+    # Sin credenciales cualquier pedido HTTP da 4xx, así que solo mira que el puerto acepte conexiones.
+    # La imagen es de node: no hace falta nada más.
+    healthcheck:
+      test: [ "CMD", "node", "-e", "require('net').connect(10000, '127.0.0.1').on('connect', () => process.exit(0)).on('error', () => process.exit(1))" ]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     networks: [ snippet-net ]
     deploy: *db-deploy
 
@@ -219,6 +290,13 @@ services:
     command: redis-server --appendonly yes
     volumes:
       - redis-data:/data
+    # Mientras carga el AOF responde LOADING en vez de PONG: recién después está listo.
+    healthcheck:
+      test: [ "CMD-SHELL", "redis-cli ping | grep -q PONG" ]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     networks: [ snippet-net ]
     deploy: *db-deploy
 

@@ -67,8 +67,10 @@ Cada VM es un Swarm de un solo nodo (manager) que corre el stack `snippet`, defi
 - **Solo el proxy publica puertos**, el `80` y el `443`. Los servicios, las bases, `asset-service`, Azurite y Redis solo se alcanzan desde adentro del stack. `asset-service` no tiene autenticación, así que no puede quedar expuesto.
 - **HTTPS** con un certificado de Let's Encrypt para el dominio de DuckDNS. Por el `80` solo se valida el dominio; todo lo demás se redirige a HTTPS.
 - **DuckDNS** mantiene el dominio apuntando a la IP pública de la VM, aunque cambie.
+- **El certificado se renueva solo**: el servicio `certbot` del stack corre `certbot renew` al arrancar y cada 12 horas, y nginx se recarga cada 6 horas para tomar el nuevo. No hace falta un deploy.
 - Swarm reinicia lo que se cae.
-- Si una imagen nueva no arranca, Swarm vuelve sola a la anterior.
+- Si una imagen nueva no arranca o no pasa su healthcheck, Swarm vuelve sola a la anterior.
+- Los logs de cada container rotan (3 archivos de 10 MB), para que no llenen el disco.
 
 | Entorno | Dominio |
 |---|---|
@@ -116,10 +118,10 @@ La contraseña de una base además hay que cambiarla adentro de postgres (`ALTER
   2. despliega el stack;
   3. corre `certbot.sh`, que pide el certificado a Let's Encrypt y recarga nginx. Let's Encrypt valida el dominio por el `80`, por eso se pide con nginx ya andando.
 
-  certbot es un container que corre una vez y termina: si ya hay un certificado y le faltan más de 30 días para vencer, no pide nada; si le falta menos, lo renueva.
+  Acá certbot es un container que corre una vez y termina: si ya hay un certificado y le faltan más de 30 días para vencer, no pide nada; si le falta menos, lo renueva. Las renovaciones no dependen de esto: las hace el servicio `certbot` del stack, que deja el certificado nuevo en el mismo volumen; nginx lo toma en su próxima recarga (cada 6 horas).
 - **Cada servicio y la UI:** su CD actualiza solo su servicio con `docker service update --image ...:sha-xxxxxxxx`.
 
-Si el pedido a Let's Encrypt falla (por ejemplo, porque DuckDNS todavía no apunta a la VM), el deploy no falla: queda el autofirmado (el browser muestra un aviso) y se reintenta en el próximo deploy, o a mano:
+Si el pedido a Let's Encrypt falla (por ejemplo, porque DuckDNS todavía no apunta a la VM), el deploy no falla: queda el autofirmado (el browser muestra un aviso) y se reintenta en el próximo deploy, o a mano (el servicio `certbot` no lo pide: solo renueva uno que ya existe):
 
 ```sh
 # desde tu máquina, parado en este repo, con un context que apunte a la VM
@@ -137,6 +139,7 @@ docker service ps snippet_snippet-service   # tareas, imagen y errores
 docker service logs -f snippet_snippet-service
 docker service logs -f snippet_proxy        # los pedidos que entran y a dónde van
 docker service logs snippet_duckdns         # si DuckDNS aceptó la IP ("OK")
+docker service logs snippet_certbot         # las renovaciones del certificado
 ```
 
 Y desde cualquier lado: `https://<subdominio>.duckdns.org/api/actuator/health`.

@@ -91,6 +91,12 @@ services:
       - "10000:10000"
     volumes:
       - azurite-data:/data
+    # Los mismos healthchecks que en docker-stack.yml: docker compose ps muestra si Azurite y Redis están listos.
+    healthcheck:
+      test: [ "CMD", "node", "-e", "require('net').connect(10000, '127.0.0.1').on('connect', () => process.exit(0)).on('error', () => process.exit(1))" ]
+      interval: 10s
+      timeout: 5s
+      retries: 3
     restart: unless-stopped
 
   # La cola de snippets a lintear (US15): un stream que escribe y lee snippet-service. Con AOF,
@@ -102,6 +108,11 @@ services:
       - "6379:6379"
     volumes:
       - redis-data:/data
+    healthcheck:
+      test: [ "CMD-SHELL", "redis-cli ping | grep -q PONG" ]
+      interval: 10s
+      timeout: 5s
+      retries: 3
     restart: unless-stopped
 
   permission-service:

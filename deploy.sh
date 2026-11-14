@@ -95,7 +95,8 @@ if [ -n "${NEW_RELIC_LICENSE_KEY:-}" ]; then
     echo "Agente de infraestructura de New Relic corriendo (newrelic-infra)."
 fi
 
-# Si falla (por ejemplo, DuckDNS todavía no apunta a esta VM), el stack queda andando con el certificado
+# El primer certificado. Las renovaciones ya no dependen de que haya un deploy: las hace el servicio certbot del
+# stack. Si falla (por ejemplo, DuckDNS todavía no apunta a esta VM), el stack queda andando con el certificado
 # autofirmado y se reintenta en el próximo deploy, o a mano con: sh certbot.sh <dev|prod> (ver el README)
 if ! sh ./certbot.sh "$env_name"; then
     echo "No se pudo conseguir el certificado de Let's Encrypt: nginx sigue con el autofirmado." >&2
