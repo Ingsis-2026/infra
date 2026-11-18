@@ -61,8 +61,8 @@ resource "newrelic_synthetics_script_monitor" "snippet_flow" {
   })
 }
 
-# El certificado de Let's Encrypt dura 90 días y deploy.sh solo lo renueva cuando corre: si no hubo deploys en
-# dos meses y medio, vence y el navegador deja de entrar. Avisa con 15 días de margen.
+# El certificado de Let's Encrypt dura 90 días. Lo renueva el servicio certbot del stack cada 12 h; si eso falla
+# (por ejemplo, Let's Encrypt no llega al 80), vence y el navegador deja de entrar. Avisa con 15 días de margen.
 resource "newrelic_synthetics_cert_check_monitor" "certificate" {
   name                   = "${local.prefix} certificate"
   domain                 = var.domain

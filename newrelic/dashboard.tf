@@ -1,6 +1,6 @@
-# El dashboard del entorno: qué está pasando, de un vistazo. Seis páginas: estado general, los SLO con su error
-# budget, el flujo de crear un snippet (con sus traces), los datos y las colas, los servicios uno por uno y la VM con
-# sus containers.
+# El dashboard del entorno: qué está pasando, de un vistazo. Siete páginas: estado general, los SLO con su error
+# budget, el flujo de crear un snippet (con sus traces), los datos y las colas, los servicios uno por uno, la VM con
+# sus containers y la UI vista desde el navegador.
 
 locals {
   snippet_app = local.apps["snippet-service"]
@@ -461,6 +461,55 @@ resource "newrelic_one_dashboard" "snippet_searcher" {
       height = 3
       nrql_query {
         query = "SELECT average(cpuPercent) AS 'CPU', average(memoryUsedPercent) AS 'Memoria' FROM SystemSample WHERE ${local.infra_filter} TIMESERIES AUTO"
+      }
+    }
+  }
+
+  # Lo que reporta el agente de browser de printscript-ui (browser.tf): la UI desde el navegador de cada usuario.
+  page {
+    name = "Navegador"
+
+    widget_line {
+      title  = "Carga de la página (s)"
+      row    = 1
+      column = 1
+      width  = 6
+      height = 3
+      nrql_query {
+        query = "SELECT percentile(duration, 50, 95) FROM PageView WHERE appName = '${local.browser_app}' TIMESERIES AUTO"
+      }
+    }
+
+    widget_line {
+      title  = "Errores de JavaScript"
+      row    = 1
+      column = 7
+      width  = 6
+      height = 3
+      nrql_query {
+        query = "SELECT count(*) FROM JavaScriptError WHERE appName = '${local.browser_app}' TIMESERIES AUTO"
+      }
+    }
+
+    widget_line {
+      title  = "Pedidos a /api desde el navegador, por código de respuesta"
+      row    = 4
+      column = 1
+      width  = 6
+      height = 3
+      nrql_query {
+        query = "SELECT count(*) FROM AjaxRequest WHERE appName = '${local.browser_app}' AND requestUrl LIKE '%/api/%' FACET httpResponseCode TIMESERIES AUTO"
+      }
+    }
+
+    widget_table {
+      title  = "Errores de JavaScript más frecuentes (24 h)"
+      row    = 4
+      column = 7
+      width  = 6
+      height = 3
+      nrql_query {
+        query = "SELECT count(*) FROM JavaScriptError WHERE appName = '${local.browser_app}' FACET errorClass, errorMessage, pageUrl SINCE 1 day ago LIMIT 20"
       }
     }
   }

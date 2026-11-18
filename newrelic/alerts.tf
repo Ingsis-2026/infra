@@ -1,6 +1,7 @@
-# Las alertas: una política por entorno, con condiciones que miran el sistema desde tres lados.
+# Las alertas: una política por entorno, con condiciones que miran el sistema desde cuatro lados.
 #   - Desde afuera (monitores sintéticos): ¿un usuario puede usarlo?
 #   - Desde cada servicio (agente APM): ¿está vivo, falla o anda lento?
+#   - Desde el navegador (agente de browser de la UI): ¿la UI les tira errores a los usuarios?
 #   - Desde la VM (agente de infraestructura): ¿el container corre, se reinicia, se queda sin memoria? ¿la VM responde?
 # Si un servicio se cae en un deploy, avisan al menos dos: su health check y la pérdida de señal de su agente.
 
@@ -116,7 +117,7 @@ resource "newrelic_nrql_alert_condition" "error_rate" {
 }
 
 # El 95% de los pedidos web tarda más de 3 segundos durante 5 minutos. Suele ser un servicio de abajo que no
-# responde: snippet-service espera sin timeout a los que llama.
+# responde a tiempo: snippet-service espera hasta el timeout de cada cliente (10 s, 30 s para language-service).
 resource "newrelic_nrql_alert_condition" "slow_responses" {
   policy_id   = newrelic_alert_policy.snippet_searcher.id
   name        = "Respuestas lentas"
@@ -156,6 +157,36 @@ resource "newrelic_nrql_alert_condition" "background_failures" {
   critical {
     operator              = "above"
     threshold             = 5
+    threshold_duration    = 300
+    threshold_occurrences = "at_least_once"
+  }
+
+  aggregation_window           = 300
+  aggregation_method           = "event_timer"
+  aggregation_timer            = 60
+  violation_time_limit_seconds = local.incident_time_limit
+}
+
+# --- Desde el navegador --------------------------------------------------------------------------------------------
+# Lo que ve el agente de browser de printscript-ui (browser.tf): los errores que tira la UI en el navegador de los
+# usuarios, que el backend nunca ve (un componente que se rompe, una respuesta que la UI no sabe leer).
+
+# Más de 10 errores de JavaScript en 5 minutos. Por cantidad y no por porcentaje de páginas: con el poco tráfico que
+# tiene, un solo error en la única página vista sería el 100%.
+resource "newrelic_nrql_alert_condition" "browser_errors" {
+  policy_id   = newrelic_alert_policy.snippet_searcher.id
+  name        = "Errores de JavaScript en la UI"
+  description = "La UI tiró más de 10 errores de JavaScript en 5 minutos. Ver cuáles en la página \"Navegador\" del dashboard o en Browser → ${local.browser_app} → Errors."
+  type        = "static"
+  enabled     = true
+
+  nrql {
+    query = "SELECT count(*) FROM JavaScriptError WHERE appName = '${local.browser_app}'"
+  }
+
+  critical {
+    operator              = "above"
+    threshold             = 10
     threshold_duration    = 300
     threshold_occurrences = "at_least_once"
   }

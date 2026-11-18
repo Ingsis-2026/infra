@@ -2,16 +2,17 @@
 
 Lo que pidió la cátedra: métricas que digan algo, monitores sintéticos que fallen, alertas que salten si se cae un servicio (también en medio de un deploy), dashboards que muestren qué está pasando, los puntos de falla de la arquitectura, y el trace de crear un snippet pasando por todos los servicios.
 
-Se mira el sistema desde tres lados:
+Se mira el sistema desde varios lados:
 
 | Lado | Qué es | Qué ve | Dónde está |
 |---|---|---|---|
 | **Desde afuera** | Monitores sintéticos de New Relic | Si un usuario puede usarlo: la UI, el health de cada servicio, crear un snippet de punta a punta, el certificado | `synthetics.tf` |
 | **Desde cada servicio** | Agente Java de New Relic (APM) en `snippet-service`, `permission-service`, `language-service` y `asset-service` | Pedidos, errores, tiempos, llamados entre servicios, consultas a Postgres y Redis, logs, **traces distribuidos** | `newrelic/newrelic.yml` y el `Dockerfile` de cada servicio; `docker-stack.yml` |
+| **Desde el navegador** | Agente de browser de New Relic (`@newrelic/browser-agent`) dentro del build de printscript-ui, que reporta a la aplicación `printscript-ui-<entorno>` | Cuánto tarda en cargar la UI, los errores de JavaScript, los pedidos a `/api` (que arrancan el trace distribuido) y las navegaciones dentro de la SPA | `browser.tf`; `src/observability/newRelic.ts` en printscript-ui |
 | **Desde la VM** | Agente de infraestructura (`newrelic-infra`, lo levanta `deploy.sh` fuera del stack) | CPU, memoria y disco de la VM; memoria, CPU y recreaciones de cada container | `deploy.sh` |
 | **Desde los datos** | Eventos que reporta snippet-service con la API del agente | Cuántos snippets hay (cada minuto), quién crea, comparte y borra, a quién se le muestra vacía la lista teniendo snippets, y cuánto espera en cada stream de Redis | `observability/` y `streams/StreamBacklogReporter.kt` en snippet-service |
 
-Los SLO (`slo.tf`), las alertas (`alerts.tf`) y el dashboard (`dashboard.tf`) se arman con Terraform: los dos entornos quedan iguales y cualquiera del equipo los puede volver a crear.
+Los SLO (`slo.tf`), las alertas (`alerts.tf`), el dashboard (`dashboard.tf`) y la aplicación de browser (`browser.tf`) se arman con Terraform: los dos entornos quedan iguales y cualquiera del equipo los puede volver a crear.
 
 ## SLO y error budget
 
@@ -76,13 +77,13 @@ Lo que se puede romper, qué pasa entonces y cómo nos enteramos. *Pendiente* es
 |---|---|---|---|---|
 | 1 | **La VM** (es una sola, un solo nodo de Swarm) | Se cae todo junto. Pasa también si Azure la desasigna (auto-shutdown, la suscripción vence). | `VM sin reportar`, todos los monitores en rojo | Una sola VM por entorno: no hay a dónde mover nada. |
 | 2 | **nginx** | Es la única entrada: sin él no hay UI ni API, aunque todo lo demás ande. | Monitores de UI y de health | — |
-| 3 | **DuckDNS / el certificado** | Si el dominio deja de apuntar a la VM o vence el certificado, los usuarios no entran. El certificado solo se renueva cuando corre `deploy.sh`. | Monitor `certificate` (15 días antes), monitores de health | Renovar el certificado con un cron, no solo en cada deploy. |
+| 3 | **DuckDNS / el certificado** | Si el dominio deja de apuntar a la VM o vence el certificado, los usuarios no entran. El servicio `certbot` del stack lo renueva cada 12 h (y al arrancar la VM) y nginx se recarga cada 6 h para tomarlo. | Monitor `certificate` (15 días antes), monitores de health | Resuelto: servicio `certbot` en `docker-stack.yml`. El monitor queda para avisar si la renovación falla. |
 | 4 | **Auth0** | Sin Auth0 no hay login ni se pueden validar tokens: la API responde 401 a todo. | Monitor `snippet flow` (falla en el paso del token) | Es externo: solo se puede detectar. |
 | 5 | **snippet-service** | Es el orquestador y tiene una réplica: si se cae, no anda ninguna operación. | Health `snippet-service`, `Servicio sin reportar`, `Container reiniciándose` | — |
-| 6 | **Un servicio lento o colgado** | Los `RestClient` de snippet-service no tienen timeout: si language-, permission- o asset-service se cuelgan, cada pedido espera para siempre, ocupando un thread de Tomcat y, dentro de `create`/`update`, una conexión de la base (Hikari tiene 10). Un servicio colgado termina tirando a snippet-service. | `Respuestas lentas`; en el trace se ve qué llamado se lleva el tiempo | Ponerles connect/read timeout a los clientes. |
+| 6 | **Un servicio lento o colgado** | Los clientes de snippet-service tienen timeout (`services.timeouts`: 2 s para conectar, 10 s de respuesta y 30 s para language-service). Si un servicio se cuelga, el pedido falla en vez de quedarse esperando, y en los streams el mensaje se posterga sin gastar intentos. Mientras tanto, cada pedido ocupa un thread de Tomcat y, dentro de `create`/`update`, una conexión de la base. | `Respuestas lentas`; en el trace se ve qué llamado se lleva el tiempo | Resuelto con los timeouts; si hiciera falta, un circuit breaker. |
 | 7 | **language-service** | Sin él no se puede crear, editar, lintear, formatear ni correr nada. Además ejecuta código de usuarios. | Health `language-service`, `Servicio sin reportar`, `Linteo... fallando` | — |
 | 8 | **permission-service / permission-db** | Sin él nadie ve ningún snippet (la lista falla con 502), ni se puede crear o compartir. | Health `permission-service` (da DOWN si se cae su base), `Servicio sin reportar` | — |
-| 9 | **asset-service / Azurite** | Sin ellos no se lee ni se guarda ningún código. Azurite es un emulador: no es almacenamiento durable y no tiene backup. La imagen de la cátedra es `:latest`, puede cambiar sola en un redeploy. Logueaba el cuerpo de cada pedido (el código entero): ahora `AZURE_HTTP_LOG_LEVEL=BASIC`. | Health `asset-service`, monitor `snippet flow` (Azurite no tiene health propio) | Fijar la versión de la imagen; backup del volumen. |
+| 9 | **asset-service / Azurite** | Sin ellos no se lee ni se guarda ningún código. Azurite es un emulador: no es almacenamiento durable y no tiene backup. La imagen de la cátedra está fijada (`main.18`), así que no cambia sola en un redeploy. Logueaba el cuerpo de cada pedido (el código entero): ahora `AZURE_HTTP_LOG_LEVEL=BASIC`. | Health `asset-service`, monitor `snippet flow` (Azurite no tiene health propio) | Backup del volumen. |
 | 10 | **snippet-db** | Sin metadata no anda nada. Volumen local, sin backups. | Health `snippet-service` (da DOWN si se cae su base), `Disco de la VM alta` | Backups (`pg_dump` programado). |
 | 11 | **Redis** | No se pierde nada guardado, pero los snippets nuevos quedan en `PENDING` hasta que vuelva: no se lintean ni se formatean. | Health `snippet-service` (da DOWN si se cae Redis), `Linteo... fallando` | — |
 | 12 | **Un snippet enorme** (por ejemplo, 3 GB) | nginx corta todo lo que pase de 1 MB con un 413 antes de que llegue a snippet-service. Pero snippet-service no tiene límite propio para el JSON, y el código vive entero en memoria varias veces (el `String`, el JSON a language-service, los bytes a asset-service, la respuesta): si alguien sube el límite de nginx o llega sin pasar por él, el container pasa su límite de 1 GB, Docker lo mata (OOM) y Swarm levanta otro. | `Container cerca del límite de memoria`, `Container reiniciándose`, `Servicio sin reportar`, health `snippet-service` | Limitar el tamaño también en snippet-service (`spring.servlet.multipart.max-file-size` y un límite para el body). |
@@ -102,6 +103,7 @@ Todas están en la política `snippet-searcher-<entorno>` y llegan por mail a `a
 | Tasa de errores alta | Más del 5% de los pedidos con error por 5 minutos (warning: 1%) | Un servicio de abajo falla |
 | Respuestas lentas | p95 de más de 3 s por 5 minutos | Un servicio colgado o lento (punto 6) |
 | Linteo o formateo en segundo plano fallando | Más de 5 mensajes de Redis fallados en 5 minutos | Snippets que quedan en PENDING |
+| Errores de JavaScript en la UI | Más de 10 errores de JavaScript en 5 minutos, en los navegadores de los usuarios | La UI rota aunque el backend responda bien |
 | VM sin reportar | La VM no manda métricas por 5 minutos | La VM apagada o colgada |
 | Container cerca del límite de memoria | Más del 90% de su límite por 2 minutos (warning: 80% por 5) | Un OOM por venir (punto 12) |
 | Container reiniciándose | Más de 2 containers de un servicio en 10 minutos | Crash loop o deploy con rollback (punto 13) |
@@ -117,7 +119,7 @@ Una sola vez por cuenta y por entorno.
 
 1. **Cuenta de New Relic.** Con la cuenta gratuita alcanza. De **API keys** se necesitan dos: la **License key** (ingest, la que usan los agentes) y una **User key** (`NRAK-...`, la que usa Terraform). También el **account id**.
 2. **La VM.** Cargar `NEW_RELIC_LICENSE_KEY` como secreto de los environments `dev` y `prod` de GitHub y desplegar el stack: `deploy.sh` la guarda como Docker Secret (ver [Dónde vive la configuración](../README.md#dónde-vive-la-configuración)). Los servicios necesitan las imágenes nuevas, que traen el agente: las publica el CD de cada servicio cuando se mergea su PR.
-3. **Auth0, para el monitor de punta a punta** (opcional: sin esto se crean todos los demás). En Auth0 → Applications, crear una aplicación *Machine to Machine* autorizada para la API `https://snippet-searcher/api`. El monitor crea sus snippets con ese usuario (`<client id>@clients`) y los borra al terminar.
+3. **Auth0, para el monitor de punta a punta** (opcional: sin esto se crean todos los demás). En Auth0 → Applications, crear una aplicación *Machine to Machine* autorizada para la API `https://snippet-searcher/api` con los permisos `read:snippets` y `write:snippets`: snippet-service los exige y, sin ellos, el monitor recibe 403. El monitor crea sus snippets con ese usuario (`<client id>@clients`) y los borra al terminar.
 4. **Terraform** (o OpenTofu), desde esta carpeta:
 
    ```sh
@@ -134,6 +136,25 @@ Una sola vez por cuenta y por entorno.
    Cada entorno tiene **su propio estado**, el de su workspace (`terraform.tfstate.d/<entorno>/terraform.tfstate`). Con un solo estado para los dos, aplicar `prod.tfvars` reemplazaría las alertas, los monitores y el dashboard de dev por los de prod. Por eso el plan falla si el workspace no se llama como `environment`.
 
    Al final imprime la URL del dashboard. El estado queda en la máquina de quien lo aplicó y guarda el client secret: no se commitea.
+5. **Browser monitoring de la UI.** El `apply` de cada workspace crea la aplicación de browser `printscript-ui-<entorno>` (`browser.tf`) y saca como outputs lo que necesita el agente de la UI. El agente va dentro del build de printscript-ui, así que esos valores se cargan como **variables de repositorio** de `printscript-ui` (Settings → Secrets and variables → Actions → *Variables*):
+   - **Variables y no secretos**: la license key de browser (`NRJS-...`) es pública, viaja en el JavaScript que baja cada navegador. No es la License key de ingest de los agentes de APM.
+   - **De repositorio y no de los environments `dev`/`prod`**: el job del CD que arma la imagen no usa environment. La cuenta es una sola para los dos entornos; lo que cambia es la aplicación, por eso hay una variable de application id por entorno.
+
+   ```sh
+   terraform workspace select dev
+   terraform output browser_github_variables   # NEW_RELIC_ACCOUNT_ID, NEW_RELIC_TRUST_KEY, NEW_RELIC_BROWSER_LICENSE_KEY y NEW_RELIC_BROWSER_APPLICATION_ID_DEV
+   terraform workspace select prod
+   terraform output browser_github_variables   # las mismas tres de la cuenta, y NEW_RELIC_BROWSER_APPLICATION_ID_PROD
+   ```
+
+   Se cargan a mano en GitHub, o con `gh` desde cada workspace (si está `jq`):
+
+   ```sh
+   terraform output -json browser_github_variables | jq -r 'to_entries[] | "\(.key) \(.value)"' |
+     while read -r name value; do gh variable set "$name" --repo Ingsis-2026/printscript-ui --body "$value"; done
+   ```
+
+   El próximo CD de printscript-ui (un push a `dev` o `master`) arma la imagen con el agente; sin las variables, la UI no lo carga. Para verlo: usar la UI y mirar **Browser → printscript-ui-dev** en New Relic, o la página **Navegador** del dashboard. Si alguna de las claves de la cuenta sale `null` (New Relic devolvió la configuración con otra forma), están en `terraform output browser_js_config` o en Browser → la aplicación → *Application settings*, en el snippet de copy/paste (`accountID`, `trustKey`, `licenseKey`).
 
 Los monitores de ping son gratis y corren cada minuto. El de punta a punta cuenta contra los checks del plan (500 por mes en el gratuito), por eso corre cada 6 horas; para la demo, `flow_check_period = "EVERY_5_MINUTES"` y otro `apply`.
 
