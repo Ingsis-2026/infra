@@ -136,5 +136,5 @@ resource "newrelic_nrql_alert_condition" "slo_fast_burn" {
   aggregation_method           = "event_flow"
   aggregation_delay            = 120
   slide_by                     = 900
-  violation_time_limit_seconds = 86400
+  violation_time_limit_seconds = local.incident_time_limit
 }

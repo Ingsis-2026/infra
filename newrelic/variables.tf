@@ -10,8 +10,13 @@ variable "region" {
 }
 
 variable "environment" {
-  description = "dev o prod. Tiene que coincidir con IMAGE_TAG en el .env de la VM: es parte del nombre de cada aplicación."
+  description = "dev o prod. Tiene que coincidir con IMAGE_TAG de env/<entorno>.env: es parte del nombre de cada aplicación. También es el nombre del workspace."
   type        = string
+
+  validation {
+    condition     = contains(["dev", "prod"], var.environment)
+    error_message = "environment tiene que ser dev o prod."
+  }
 }
 
 variable "domain" {
