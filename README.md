@@ -48,7 +48,7 @@ nginx es la única puerta de entrada: recibe todos los pedidos y, según la ruta
 | `/...` | `printscript-ui:80` | La UI. |
 
 - Las rutas están en [`nginx/locations.conf`](nginx/locations.conf) y son las mismas en el compose y en las VMs. Lo que cambia es el `server` que las incluye: [`local.conf`](nginx/local.conf) (solo HTTP) y [`vm.conf.template`](nginx/vm.conf.template) (HTTPS con el dominio de DuckDNS).
-- `permission-service` y `language-service` no tienen ruta: solo les habla `snippet-service`, desde adentro.
+- `permission-service` y `language-service` no tienen ruta: solo les habla `snippet-service`, desde adentro. Igual piden un access token machine-to-machine de Auth0 para la API interna (`https://snippet-searcher/internal`), que `snippet-service` pide con client credentials. Así, otro container de la red no puede darse permisos ni correr código. En el compose local no lo piden, salvo que pongas `INTERNAL_AUTH_ENABLED=true` en el `.env`.
 - Es un **reverse proxy, no un load balancer**: nginx elige el servicio, no la réplica. Cada nombre resuelve a la IP virtual del servicio en Swarm, y Swarm reparte entre sus réplicas.
 - La UI y la API comparten dominio, así que el browser no necesita CORS.
 
@@ -86,7 +86,12 @@ Cada VM es un Swarm de un solo nodo (manager) que corre el stack `snippet`, defi
    ```
 
    Nada más: en la VM no queda ninguna configuración ni ningún archivo del repo (ni el stack, ni scripts, ni `.env`, ni `docker login`: las imágenes son públicas). Lo único propio de la VM es `~/.ssh/`, que viene con ella. El deploy corre en el runner de GitHub y le habla al docker de la VM por SSH con un [docker context](https://docs.docker.com/engine/manage-resources/contexts/): la VM solo expone el `22`, el `80` y el `443`, nunca el puerto de la API de docker.
-4. **En GitHub**, en los environments `dev` y `prod` del repo: los secretos `SSH_HOST`, `SSH_USERNAME`, `SSH_KEY`, `SNIPPET_DB_PASSWORD` y `PERMISSION_DB_PASSWORD` (contraseñas fuertes), `DUCKDNS_TOKEN`, `AUTH0_M2M_CLIENT_ID` y `AUTH0_M2M_CLIENT_SECRET` (la aplicación machine-to-machine de Auth0 con la que snippet-service busca con quién compartir) y `NEW_RELIC_LICENSE_KEY` (ver [Observabilidad](#observabilidad-new-relic)). Opcional, la variable `LETSENCRYPT_EMAIL`.
+4. **En GitHub**, en los environments `dev` y `prod` del repo: los secretos `SSH_HOST`, `SSH_USERNAME`, `SSH_KEY`, `SNIPPET_DB_PASSWORD` y `PERMISSION_DB_PASSWORD` (contraseñas fuertes), `DUCKDNS_TOKEN`, `AUTH0_M2M_CLIENT_ID` y `AUTH0_M2M_CLIENT_SECRET` (la aplicación machine-to-machine de Auth0 de snippet-service, ver el paso 5) y `NEW_RELIC_LICENSE_KEY` (ver [Observabilidad](#observabilidad-new-relic)). Opcional, la variable `LETSENCRYPT_EMAIL`.
+5. **En Auth0:**
+   - En *Applications → APIs*, creá la API interna con identifier `https://snippet-searcher/internal`.
+   - En su pestaña *Machine to Machine Applications*, autorizá la aplicación machine-to-machine de snippet-service, la misma de `AUTH0_M2M_CLIENT_ID`. No hace falta ningún permiso.
+
+   Sin esto, snippet-service no consigue el token y permission-service y language-service le responden 401 a todo.
 
 ### Dónde vive la configuración
 
