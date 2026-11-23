@@ -94,24 +94,31 @@ Lo que se puede romper, qué pasa entonces y cómo nos enteramos. *Pendiente* es
 
 ## Alertas
 
-Todas están en la política `snippet-searcher-<entorno>` y llegan por mail a `alert_emails` cuando se abren, se reconocen y se cierran. Un solo incidente por política: lo que falle mientras está abierto se suma a ese incidente (en New Relic se ve qué condiciones fallaron), así que llega un mail al abrirse y otro al cerrarse. Las VMs pasan la mayor parte del tiempo apagadas para no gastar crédito: apagar una manda un mail, no uno por cada servicio y monitor. Un incidente abierto dura hasta 30 días, así que con la VM apagada tampoco se repite cada día.
+Están en dos políticas por entorno, y cada una manda su propio mail a `alert_emails` cuando su incidente se abre, se reconoce y se cierra (el asunto dice de cuál es):
 
-| Condición | Salta cuando | Para qué |
-|---|---|---|
-| Monitor sintético fallando | Un monitor falla 2 minutos seguidos | Lo que ve el usuario |
-| Servicio sin reportar | Un servicio no manda métricas de la JVM por 3 minutos (pérdida de señal) | El proceso no está: caída, OOM, deploy que lo bajó |
-| Tasa de errores alta | Más del 5% de los pedidos con error por 5 minutos (warning: 1%) | Un servicio de abajo falla |
-| Respuestas lentas | p95 de más de 3 s por 5 minutos | Un servicio colgado o lento (punto 6) |
-| Linteo o formateo en segundo plano fallando | Más de 5 mensajes de Redis fallados en 5 minutos | Snippets que quedan en PENDING |
-| Errores de JavaScript en la UI | Más de 10 errores de JavaScript en 5 minutos, en los navegadores de los usuarios | La UI rota aunque el backend responda bien |
-| VM sin reportar | La VM no manda métricas por 5 minutos | La VM apagada o colgada |
-| Container cerca del límite de memoria | Más del 90% de su límite por 2 minutos (warning: 80% por 5) | Un OOM por venir (punto 12) |
-| Container reiniciándose | Más de 2 containers de un servicio en 10 minutos | Crash loop o deploy con rollback (punto 13) |
-| CPU, Memoria, Disco de la VM alta | Más de 90% (disco: 85%) por 5 minutos | Recursos de la VM |
-| SLO en riesgo: (uno por SLO) | En la última hora se gastó más del 2% del error budget de 28 días | Se está por romper un SLO |
-| Snippets que desaparecieron | En 10 minutos faltan 3 o más snippets en la base que nadie borró (los de antes, más los creados, menos los borrados, contra los de ahora) | La base perdió datos: se recreó, no estaba su volumen (punto 10) |
-| Snippets que un usuario no puede ver | Un usuario con snippets en la base lista y permission-service no le devuelve ninguno | Se perdieron los permisos (punto 8) o cambió el `sub` de su token |
-| Cola de Redis atrasada | Más de 100 mensajes esperando en un stream por 15 minutos | Saturación del segundo plano: los workers no dan abasto o fallan (punto 11) |
+- **`snippet-searcher-<entorno> caídas`**: algo no está. Un servicio, la VM, un container que no levanta. Se cierra sola a los pocos minutos de que todo vuelva a estar arriba.
+- **`snippet-searcher-<entorno> degradación`**: todo está, pero anda mal. Errores, lentitud, SLO, datos, recursos. Miran ventanas largas: la alerta de SLO mira la última hora.
+
+Un solo incidente por política: lo que falle mientras está abierto se suma a ese incidente (en New Relic se ve qué condiciones fallaron), así que llega un mail al abrirse y otro al cerrarse. Las VMs pasan la mayor parte del tiempo apagadas para no gastar crédito: apagar una manda dos mails, uno por política, no uno por cada servicio y monitor. Un incidente abierto dura hasta 30 días, así que con la VM apagada tampoco se repite cada día.
+
+Por qué dos y no una: con una sola política, la alerta de SLO que se abre al apagar la VM seguía abierta hasta una hora después de prenderla, y cualquier caída en esa hora se sumaba a ese incidente sin mandar mail. Las caídas ahora tienen su política, que queda vacía en cuanto el sistema está sano.
+
+| Condición | Política | Salta cuando | Para qué |
+|---|---|---|---|
+| Monitor sintético fallando | caídas | Un monitor falla 2 minutos seguidos | Lo que ve el usuario |
+| Servicio sin reportar | caídas | Un servicio no manda métricas de la JVM por 3 minutos (pérdida de señal) | El proceso no está: caída, OOM, deploy que lo bajó |
+| Tasa de errores alta | degradación | Más del 5% de los pedidos con error por 5 minutos (warning: 1%) | Un servicio de abajo falla |
+| Respuestas lentas | degradación | p95 de más de 3 s por 5 minutos | Un servicio colgado o lento (punto 6) |
+| Linteo o formateo en segundo plano fallando | degradación | Más de 5 mensajes de Redis fallados en 5 minutos | Snippets que quedan en PENDING |
+| Errores de JavaScript en la UI | degradación | Más de 10 errores de JavaScript en 5 minutos, en los navegadores de los usuarios | La UI rota aunque el backend responda bien |
+| VM sin reportar | caídas | La VM no manda métricas por 5 minutos | La VM apagada o colgada |
+| Container cerca del límite de memoria | caídas | Más del 90% de su límite por 2 minutos (warning: 80% por 5) | Un OOM por venir (punto 12) |
+| Container reiniciándose | caídas | Más de 2 containers de un servicio en 10 minutos | Crash loop o deploy con rollback (punto 13) |
+| CPU, Memoria, Disco de la VM alta | degradación | Más de 90% (disco: 85%) por 5 minutos | Recursos de la VM |
+| SLO en riesgo: (uno por SLO) | degradación | En la última hora se gastó más del 2% del error budget de 28 días | Se está por romper un SLO |
+| Snippets que desaparecieron | degradación | En 10 minutos faltan 3 o más snippets en la base que nadie borró (los de antes, más los creados, menos los borrados, contra los de ahora) | La base perdió datos: se recreó, no estaba su volumen (punto 10) |
+| Snippets que un usuario no puede ver | degradación | Un usuario con snippets en la base lista y permission-service no le devuelve ninguno | Se perdieron los permisos (punto 8) o cambió el `sub` de su token |
+| Cola de Redis atrasada | degradación | Más de 100 mensajes esperando en un stream por 15 minutos | Saturación del segundo plano: los workers no dan abasto o fallan (punto 11) |
 
 ## Puesta en marcha
 
@@ -162,11 +169,21 @@ Los monitores de ping son gratis y corren cada minuto. El de punta a punta cuent
 
 En la VM de dev, con el dashboard abierto. Cada prueba debería abrir el incidente que dice y mandar el mail; al volver todo a la normalidad, el incidente se cierra solo.
 
+Para la demo, `newrelic/simulacro.sh` hace las dos primeras pruebas de punta a punta. Solo corre contra dev:
+
+```sh
+bash newrelic/simulacro.sh preparar                  # todo arriba, monitores en verde, ningún incidente abierto
+bash newrelic/simulacro.sh caida language-service    # rompe, avisa cuándo salió el mail, arregla y espera el de cierre
+bash newrelic/simulacro.sh deploy-roto               # imagen que no existe: Swarm hace rollback y no hay mail
+```
+
+`preparar` es lo primero, unos 10 minutos después de prender la VM: si queda un incidente abierto en `caídas`, la caída se suma a ese y no llega ningún mail, y `preparar` ofrece cerrarlo. `caida` hace el mismo chequeo antes de romper. Mientras espera, mira el registro de notificaciones de New Relic (`NrAiNotification`) y dice a qué hora salió cada mail y cuánto tardó: sirve para mostrarlo aunque el mail todavía no haya llegado a la casilla. Para hablar con New Relic necesita una User key (en `NEW_RELIC_API_KEY` o en `~/.config/newrelic/user-key`) y el account id (en `NEW_RELIC_ACCOUNT_ID`, o lo toma de `newrelic/dev.tfvars`); sin eso rompe y arregla igual, pero no revisa incidentes ni mide.
+
 **Bajar un servicio** (lo que pasa si un deploy lo deja abajo):
 
 ```sh
 docker service scale snippet_permission-service=0
-# en 2-3 minutos: "Monitor sintético fallando" (permission-service health) y "Servicio sin reportar" (permission-service-dev)
+# en 3-4 minutos: "Monitor sintético fallando" (permission-service health) y "Servicio sin reportar" (permission-service-dev)
 docker service scale snippet_permission-service=1
 ```
 
