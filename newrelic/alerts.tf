@@ -445,8 +445,11 @@ resource "newrelic_notification_destination" "team_email" {
   # New Relic agrega sola una propiedad link_sent_email (a quién mandó el link de alta). Sin esto, cada apply la borra.
   # Por eso cambiar alert_emails no se aplica solo: hay que recrearlo con
   # `tofu apply -var-file=dev.tfvars -replace=newrelic_notification_destination.team_email`.
+  # Al recrearlo se recrean también los canales, y New Relic no deja borrar un canal que usa un workflow: primero se
+  # crean los nuevos, los workflows pasan a usarlos y recién ahí se borran los viejos.
   lifecycle {
-    ignore_changes = [property]
+    ignore_changes        = [property]
+    create_before_destroy = true
   }
 }
 
@@ -462,6 +465,11 @@ resource "newrelic_notification_channel" "team_email" {
   property {
     key   = "subject"
     value = "[${each.value.name}] {{issueTitle}}"
+  }
+
+  # Ver el destino: se reemplaza antes de borrarse, porque el workflow lo está usando.
+  lifecycle {
+    create_before_destroy = true
   }
 }
 
