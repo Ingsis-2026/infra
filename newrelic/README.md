@@ -105,7 +105,7 @@ Por qué dos y no una: con una sola política, la alerta de SLO que se abre al a
 
 | Condición | Política | Salta cuando | Para qué |
 |---|---|---|---|
-| Monitor sintético fallando | caídas | Un monitor falla 2 minutos seguidos | Lo que ve el usuario |
+| Monitor sintético fallando | caídas | Un monitor falla desde todas sus ubicaciones (São Paulo y Virginia) en el mismo minuto | Lo que ve el usuario |
 | Servicio sin reportar | caídas | Un servicio no manda métricas de la JVM por 3 minutos (pérdida de señal) | El proceso no está: caída, OOM, deploy que lo bajó |
 | Tasa de errores alta | degradación | Más del 5% de los pedidos con error por 5 minutos (warning: 1%) | Un servicio de abajo falla |
 | Respuestas lentas | degradación | p95 de más de 3 s por 5 minutos | Un servicio colgado o lento (punto 6) |
@@ -179,11 +179,13 @@ bash newrelic/simulacro.sh deploy-roto               # imagen que no existe: Swa
 
 `preparar` es lo primero, unos 10 minutos después de prender la VM: si queda un incidente abierto en `caídas`, la caída se suma a ese y no llega ningún mail, y `preparar` ofrece cerrarlo. `caida` hace el mismo chequeo antes de romper. Mientras espera, mira el registro de notificaciones de New Relic (`NrAiNotification`) y dice a qué hora salió cada mail y cuánto tardó: sirve para mostrarlo aunque el mail todavía no haya llegado a la casilla. Para hablar con New Relic necesita una User key (en `NEW_RELIC_API_KEY` o en `~/.config/newrelic/user-key`) y el account id (en `NEW_RELIC_ACCOUNT_ID`, o lo toma de `newrelic/dev.tfvars`); sin eso rompe y arregla igual, pero no revisa incidentes ni mide.
 
+Ojo con el orden: un deploy y un `docker kill` del mismo servicio en 10 minutos ya son tres containers, y abren "Container reiniciándose" en `caídas`. Cerrarlo a mano no sirve, porque vuelve a abrirse mientras la ventana de 10 minutos los cuente, y la caída del simulacro se suma a ese incidente sin mandar mail. El simulacro va antes que esas pruebas, o 10 minutos después.
+
 **Bajar un servicio** (lo que pasa si un deploy lo deja abajo):
 
 ```sh
 docker service scale snippet_permission-service=0
-# en 3-4 minutos: "Monitor sintético fallando" (permission-service health) y "Servicio sin reportar" (permission-service-dev)
+# en un minuto y medio a dos: "Monitor sintético fallando" (permission-service health); unos minutos después, "Servicio sin reportar" (permission-service-dev)
 docker service scale snippet_permission-service=1
 ```
 

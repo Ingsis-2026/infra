@@ -438,7 +438,7 @@ resource "newrelic_one_dashboard" "snippet_searcher" {
       width  = 6
       height = 3
       nrql_query {
-        query = "SELECT uniqueCount(containerId) FROM ContainerSample WHERE ${local.infra_filter} FACET `label.com.docker.swarm.service.name` TIMESERIES 5 minutes"
+        query = "SELECT uniqueCount(containerId) FROM ContainerSample WHERE ${local.infra_filter} AND state = 'running' FACET `label.com.docker.swarm.service.name` TIMESERIES 5 minutes"
       }
     }
 
