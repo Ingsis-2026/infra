@@ -50,8 +50,12 @@ locals {
 
 # --- Desde afuera ---------------------------------------------------------------------------------------------------
 
-# Cualquier monitor que falle dos minutos seguidos desde al menos una de las ubicaciones. Un solo check fallado no
-# alcanza (puede ser la red de la ubicación); dos minutos seguidos ya no es casualidad.
+# Un monitor que falla desde todas sus ubicaciones en el mismo minuto. Los de salud corren cada minuto desde São Paulo
+# y Virginia: que fallen los dos a la vez no es la red de una ubicación, es el servicio. La confirmación es en el
+# espacio (dos lugares) y no en el tiempo (dos minutos seguidos): el 27/11 el mail salió 1:42 después de la caída,
+# contra 3:34 antes. Hasta el primer check fallado pasa hasta un minuto (los monitores no corren más seguido en ningún
+# plan), y 60 s es el mínimo que New Relic acepta para una condición estática.
+# El monitor del certificado corre desde una sola ubicación: con un check fallado alcanza, y está bien que avise.
 resource "newrelic_nrql_alert_condition" "synthetic_failure" {
   policy_id   = newrelic_alert_policy.caidas.id
   name        = "Monitor sintético fallando"
@@ -65,14 +69,14 @@ resource "newrelic_nrql_alert_condition" "synthetic_failure" {
 
   critical {
     operator              = "above_or_equals"
-    threshold             = 50
-    threshold_duration    = 120
+    threshold             = 100
+    threshold_duration    = 60
     threshold_occurrences = "all"
   }
 
   aggregation_window = 60
   aggregation_method = "event_timer"
-  aggregation_timer  = 60
+  aggregation_timer  = 5
 
   # Si un monitor deja de tener resultados (lo pausaron), no es una caída.
   violation_time_limit_seconds = local.incident_time_limit
@@ -375,6 +379,9 @@ resource "newrelic_nrql_alert_condition" "container_memory" {
 # Swarm no reinicia un container: crea uno nuevo. Un servicio con más de 2 containers distintos en 10 minutos se está
 # cayendo y volviendo a levantar (crash loop), o un deploy no termina de levantar y hace rollback. Un deploy normal con
 # start-first son 2: el viejo y el nuevo.
+# Solo cuentan los que estaban corriendo: Swarm guarda los containers parados como historial de tareas, y el agente
+# los sigue reportando (state 'exited'). Sin ese filtro, un deploy y un kill dejaban 3 para siempre y la alerta no se
+# cerraba nunca, y cualquier caída se sumaba a ese incidente sin mandar mail.
 resource "newrelic_nrql_alert_condition" "container_churn" {
   policy_id   = newrelic_alert_policy.caidas.id
   name        = "Container reiniciándose"
@@ -383,7 +390,7 @@ resource "newrelic_nrql_alert_condition" "container_churn" {
   enabled     = true
 
   nrql {
-    query = "SELECT uniqueCount(containerId) FROM ContainerSample WHERE ${local.infra_filter} FACET `label.com.docker.swarm.service.name`"
+    query = "SELECT uniqueCount(containerId) FROM ContainerSample WHERE ${local.infra_filter} AND state = 'running' FACET `label.com.docker.swarm.service.name`"
   }
 
   critical {

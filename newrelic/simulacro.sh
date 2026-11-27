@@ -325,8 +325,8 @@ cmd_caida() {
         asset-service)
             note "UI: abrir o crear un snippet falla (no hay código); el listado también, porque trae el código." ;;
     esac
-    note "New Relic, en 3-4 minutos, en la política \"$POLICY_CAIDAS\": \"Monitor sintético fallando\""
-    note "(el monitor \"$svc health\") y \"Servicio sin reportar\" ($svc-dev). Un incidente, un mail."
+    note "New Relic, en un minuto y medio a dos, en la política \"$POLICY_CAIDAS\": \"Monitor sintético fallando\""
+    note "(el monitor \"$svc health\"), y unos minutos después \"Servicio sin reportar\" ($svc-dev). Un incidente, un mail."
     note "Si usás la UI mientras tanto, puede abrirse también \"Tasa de errores alta\" en \"$POLICY_DEGRADACION\"."
     note "En APM, el servicio que llama muestra la tasa de errores y el trace marca el llamado que falla."
 
