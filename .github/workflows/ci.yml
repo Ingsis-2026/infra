@@ -28,7 +28,7 @@ jobs:
           docker stack config -c docker-stack.yml > /dev/null
 
       - name: Lint the scripts
-        run: shellcheck deploy.sh certbot.sh
+        run: shellcheck deploy.sh certbot.sh demo-deploy.sh
 
       # nginx -t con la misma imagen y los mismos archivos en los mismos paths que el compose y el stack.
       # La de las VMs necesita un certificado para el 443: uno autofirmado, como el que deja certbot.sh en la VM.
