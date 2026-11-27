@@ -128,6 +128,15 @@ La contraseña de una base además hay que cambiarla adentro de postgres (`ALTER
   Acá certbot es un container que corre una vez y termina: si ya hay un certificado y le faltan más de 30 días para vencer, no pide nada; si le falta menos, lo renueva. Las renovaciones no dependen de esto: las hace el servicio `certbot` del stack, que deja el certificado nuevo en el mismo volumen; nginx lo toma en su próxima recarga (cada 6 horas).
 - **Cada servicio y la UI:** su CD actualiza solo su servicio con `docker service update --image ...:sha-xxxxxxxx`.
 
+  Para mostrarlo en vivo sin un commit nuevo, `demo-deploy.sh` vuelve a correr el job "Deploy to VM" del último deploy de un servicio y compara las tareas del stack antes y después: cambia la de ese servicio y las demás quedan iguales. Necesita `gh` logueado y el docker context del entorno, y la VM prendida hace unos 10 minutos:
+
+  ```sh
+  bash demo-deploy.sh printscript-ui        # o snippet-service, permission-service, language-service; dev por defecto
+  bash demo-deploy.sh snippet-service prod  # en prod pide confirmación
+  ```
+
+  Se niega si el último deploy no es la punta de la rama (volvería a una versión vieja) o si el servicio ya corre esa imagen (Swarm no crearía ninguna tarea). En ese caso imprime el comando que lo vuelve al tag del entorno.
+
 Si el pedido a Let's Encrypt falla (por ejemplo, porque DuckDNS todavía no apunta a la VM), el deploy no falla: queda el autofirmado (el browser muestra un aviso) y se reintenta en el próximo deploy, o a mano (el servicio `certbot` no lo pide: solo renueva uno que ya existe):
 
 ```sh
@@ -162,7 +171,7 @@ nginx le pone a cada pedido un header `X-Request-Id` (lo genera siempre él, aun
 - `ci.yml` valida en cada push y PR:
   - `docker-compose.yml`
   - `docker-stack.yml`
-  - `deploy.sh` y `certbot.sh`, con shellcheck
+  - `deploy.sh`, `certbot.sh` y `demo-deploy.sh`, con shellcheck
   - la config de nginx del compose y la de las VMs, con `nginx -t`
 - `deploy.yml` despliega el stack en la VM del entorno cuando CI pasa en un push a `dev` o `main`.
   - Está apagado hasta que la variable `DEPLOY_ENABLED` valga `true`.
