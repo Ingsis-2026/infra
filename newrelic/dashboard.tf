@@ -53,7 +53,7 @@ resource "newrelic_one_dashboard" "snippet_searcher" {
       width  = 6
       height = 3
       nrql_query {
-        query = "SELECT latest(event) AS 'Estado', latest(title) AS 'Qué pasa', latest(priority) AS 'Prioridad', earliest(timestamp) AS 'Desde' FROM NrAiIncident WHERE policyName = '${local.prefix}' FACET incidentId SINCE 1 day ago LIMIT 20"
+        query = "SELECT latest(event) AS 'Estado', latest(policyName) AS 'Política', latest(title) AS 'Qué pasa', latest(priority) AS 'Prioridad', earliest(timestamp) AS 'Desde' FROM NrAiIncident WHERE policyName LIKE '${local.prefix} %' FACET incidentId SINCE 1 day ago LIMIT 20"
       }
     }
 
@@ -438,7 +438,7 @@ resource "newrelic_one_dashboard" "snippet_searcher" {
       width  = 6
       height = 3
       nrql_query {
-        query = "SELECT uniqueCount(containerId) FROM ContainerSample WHERE ${local.infra_filter} FACET `label.com.docker.swarm.service.name` TIMESERIES 5 minutes"
+        query = "SELECT uniqueCount(containerId) FROM ContainerSample WHERE ${local.infra_filter} AND state = 'running' FACET `label.com.docker.swarm.service.name` TIMESERIES 5 minutes"
       }
     }
 

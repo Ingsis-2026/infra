@@ -114,7 +114,7 @@ data "newrelic_service_level_alert_helper" "fast_burn" {
 resource "newrelic_nrql_alert_condition" "slo_fast_burn" {
   for_each = local.service_levels
 
-  policy_id   = newrelic_alert_policy.snippet_searcher.id
+  policy_id   = newrelic_alert_policy.degradacion.id
   name        = "SLO en riesgo: ${each.value.name}"
   description = "En la última hora se gastó más del 2% del error budget de \"${each.value.name}\" (objetivo ${each.value.target}% en ${local.slo_period} días). Ver la página SLOs del dashboard y, ahí, qué otra alerta está abierta."
   type        = "static"

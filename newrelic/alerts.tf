@@ -1,15 +1,23 @@
-# Las alertas: una política por entorno, con condiciones que miran el sistema desde cuatro lados.
+# Las alertas: dos políticas por entorno (caídas y degradación, ver abajo), con condiciones que miran el sistema desde cuatro lados.
 #   - Desde afuera (monitores sintéticos): ¿un usuario puede usarlo?
 #   - Desde cada servicio (agente APM): ¿está vivo, falla o anda lento?
 #   - Desde el navegador (agente de browser de la UI): ¿la UI les tira errores a los usuarios?
 #   - Desde la VM (agente de infraestructura): ¿el container corre, se reinicia, se queda sin memoria? ¿la VM responde?
 # Si un servicio se cae en un deploy, avisan al menos dos: su health check y la pérdida de señal de su agente.
+#
+# Dos políticas por entorno, cada una con un solo incidente abierto a la vez y su propio mail:
+#   - caídas: algo no está (un servicio, la VM, un container que no levanta). Se cierra sola a los pocos minutos de que
+#     todo vuelva a estar arriba, así que con el sistema sano no queda nada abierto y la próxima caída manda su mail.
+#   - degradación: todo está, pero anda mal (errores, lentitud, SLO, datos, recursos). Estas miran ventanas largas: la
+#     alerta de SLO mira la última hora y sigue abierta hasta una hora después de prender la VM.
+# Con una sola política, ese incidente de SLO que quedaba abierto después de cada arranque se tragaba las caídas
+# siguientes: se sumaban al incidente abierto y no llegaba ningún mail.
 
-resource "newrelic_alert_policy" "snippet_searcher" {
-  name = local.prefix
-  # Un solo incidente por política: lo que falle mientras está abierto se suma a ese incidente (en New Relic se ve
-  # cada condición) y llega un solo mail al abrirse y otro al cerrarse. Las VMs pasan la mayor parte del tiempo
-  # apagadas para no gastar crédito, y con un incidente por condición y servicio cada apagado mandaba ~10 mails.
+# Un solo incidente por política: lo que falle mientras está abierto se suma a ese incidente (en New Relic se ve cada
+# condición) y llega un solo mail al abrirse y otro al cerrarse. Las VMs pasan la mayor parte del tiempo apagadas para
+# no gastar crédito, y con un incidente por condición y servicio cada apagado mandaba ~10 mails; ahora son dos.
+resource "newrelic_alert_policy" "caidas" {
+  name                = "${local.prefix} caídas"
   incident_preference = "PER_POLICY"
 
   # Cada entorno tiene su propio estado: el workspace de OpenTofu/Terraform con su nombre (ver README). Con el
@@ -22,12 +30,34 @@ resource "newrelic_alert_policy" "snippet_searcher" {
   }
 }
 
+resource "newrelic_alert_policy" "degradacion" {
+  name                = "${local.prefix} degradación"
+  incident_preference = "PER_POLICY"
+}
+
+# Antes había una sola política: la de caídas es esa misma, renombrada.
+moved {
+  from = newrelic_alert_policy.snippet_searcher
+  to   = newrelic_alert_policy.caidas
+}
+
+locals {
+  policies = {
+    caidas      = { id = newrelic_alert_policy.caidas.id, name = newrelic_alert_policy.caidas.name }
+    degradacion = { id = newrelic_alert_policy.degradacion.id, name = newrelic_alert_policy.degradacion.name }
+  }
+}
+
 # --- Desde afuera ---------------------------------------------------------------------------------------------------
 
-# Cualquier monitor que falle dos minutos seguidos desde al menos una de las ubicaciones. Un solo check fallado no
-# alcanza (puede ser la red de la ubicación); dos minutos seguidos ya no es casualidad.
+# Un monitor que falla desde todas sus ubicaciones en el mismo minuto. Los de salud corren cada minuto desde São Paulo
+# y Virginia: que fallen los dos a la vez no es la red de una ubicación, es el servicio. La confirmación es en el
+# espacio (dos lugares) y no en el tiempo (dos minutos seguidos): el 27/11 el mail salió 1:42 después de la caída,
+# contra 3:34 antes. Hasta el primer check fallado pasa hasta un minuto (los monitores no corren más seguido en ningún
+# plan), y 60 s es el mínimo que New Relic acepta para una condición estática.
+# El monitor del certificado corre desde una sola ubicación: con un check fallado alcanza, y está bien que avise.
 resource "newrelic_nrql_alert_condition" "synthetic_failure" {
-  policy_id   = newrelic_alert_policy.snippet_searcher.id
+  policy_id   = newrelic_alert_policy.caidas.id
   name        = "Monitor sintético fallando"
   description = "El monitor {{tag.monitorName}} falla desde fuera de la VM: lo que chequea no le responde a los usuarios."
   type        = "static"
@@ -39,14 +69,14 @@ resource "newrelic_nrql_alert_condition" "synthetic_failure" {
 
   critical {
     operator              = "above_or_equals"
-    threshold             = 50
-    threshold_duration    = 120
+    threshold             = 100
+    threshold_duration    = 60
     threshold_occurrences = "all"
   }
 
   aggregation_window = 60
   aggregation_method = "event_timer"
-  aggregation_timer  = 60
+  aggregation_timer  = 5
 
   # Si un monitor deja de tener resultados (lo pausaron), no es una caída.
   violation_time_limit_seconds = local.incident_time_limit
@@ -57,7 +87,7 @@ resource "newrelic_nrql_alert_condition" "synthetic_failure" {
 # El agente manda métricas de la JVM cada minuto aunque no haya pedidos. Si un servicio deja de mandarlas, el proceso
 # no está: se cayó, lo mató un OOM, o el deploy lo bajó y el nuevo no levantó. Una condición, un incidente por servicio.
 resource "newrelic_nrql_alert_condition" "service_not_reporting" {
-  policy_id   = newrelic_alert_policy.snippet_searcher.id
+  policy_id   = newrelic_alert_policy.caidas.id
   name        = "Servicio sin reportar"
   description = "{{tag.appName}} dejó de mandar datos a New Relic hace 3 minutos: el proceso no está corriendo."
   type        = "static"
@@ -87,7 +117,7 @@ resource "newrelic_nrql_alert_condition" "service_not_reporting" {
 # Más del 5% de los pedidos terminan en error (5xx o excepción) durante 5 minutos. Los 4xx no cuentan
 # (ignore_status_codes en newrelic.yml): un snippet inválido es una respuesta correcta.
 resource "newrelic_nrql_alert_condition" "error_rate" {
-  policy_id   = newrelic_alert_policy.snippet_searcher.id
+  policy_id   = newrelic_alert_policy.degradacion.id
   name        = "Tasa de errores alta"
   description = "Más del 5% de los pedidos a {{tag.appName}} fallan. Ver Errors Inbox y los traces con error."
   type        = "static"
@@ -119,7 +149,7 @@ resource "newrelic_nrql_alert_condition" "error_rate" {
 # El 95% de los pedidos web tarda más de 3 segundos durante 5 minutos. Suele ser un servicio de abajo que no
 # responde a tiempo: snippet-service espera hasta el timeout de cada cliente (10 s, 30 s para language-service).
 resource "newrelic_nrql_alert_condition" "slow_responses" {
-  policy_id   = newrelic_alert_policy.snippet_searcher.id
+  policy_id   = newrelic_alert_policy.degradacion.id
   name        = "Respuestas lentas"
   description = "El p95 de {{tag.appName}} pasa los 3 s. Mirar en un trace lento qué llamado se lleva el tiempo."
   type        = "static"
@@ -144,7 +174,7 @@ resource "newrelic_nrql_alert_condition" "slow_responses" {
 
 # Los linteos en segundo plano (Redis Streams) que fallan: el snippet queda en PENDING hasta que se reintente.
 resource "newrelic_nrql_alert_condition" "background_failures" {
-  policy_id   = newrelic_alert_policy.snippet_searcher.id
+  policy_id   = newrelic_alert_policy.degradacion.id
   name        = "Linteo o formateo en segundo plano fallando"
   description = "Fallan los mensajes de {{tag.name}}: los snippets quedan en PENDING. Suele ser language-service o Redis caídos."
   type        = "static"
@@ -174,7 +204,7 @@ resource "newrelic_nrql_alert_condition" "background_failures" {
 # Más de 10 errores de JavaScript en 5 minutos. Por cantidad y no por porcentaje de páginas: con el poco tráfico que
 # tiene, un solo error en la única página vista sería el 100%.
 resource "newrelic_nrql_alert_condition" "browser_errors" {
-  policy_id   = newrelic_alert_policy.snippet_searcher.id
+  policy_id   = newrelic_alert_policy.degradacion.id
   name        = "Errores de JavaScript en la UI"
   description = "La UI tiró más de 10 errores de JavaScript en 5 minutos. Ver cuáles en la página \"Navegador\" del dashboard o en Browser → ${local.browser_app} → Errors."
   type        = "static"
@@ -207,7 +237,7 @@ resource "newrelic_nrql_alert_condition" "browser_errors" {
 # que no estaba, un proceso que borró de más). Un create en los segundos entre el último reporte y el final de la
 # ventana cuenta como uno de más, por eso se avisa desde 3.
 resource "newrelic_nrql_alert_condition" "snippets_vanished" {
-  policy_id   = newrelic_alert_policy.snippet_searcher.id
+  policy_id   = newrelic_alert_policy.degradacion.id
   name        = "Snippets que desaparecieron"
   description = "Faltan snippets en la base que nadie borró (ver \"Datos y colas\" en el dashboard). Revisar si se reinició snippet-db y si estaba su volumen."
   type        = "static"
@@ -235,7 +265,7 @@ resource "newrelic_nrql_alert_condition" "snippets_vanished" {
 # Un usuario con snippets en la base a quien permission-service no le devuelve ninguno: los ve vacíos aunque estén.
 # Pasa si se perdieron los permisos (permission-db vacía) o si cambió su id de Auth0 (el sub del token).
 resource "newrelic_nrql_alert_condition" "snippets_hidden" {
-  policy_id   = newrelic_alert_policy.snippet_searcher.id
+  policy_id   = newrelic_alert_policy.degradacion.id
   name        = "Snippets que un usuario no puede ver"
   description = "Hay usuarios que tienen snippets en la base pero permission-service no les devuelve ninguno. Ver la tabla en \"Datos y colas\" y revisar permission-db."
   type        = "static"
@@ -261,7 +291,7 @@ resource "newrelic_nrql_alert_condition" "snippets_hidden" {
 # La saturación del segundo plano: los mensajes de un stream de Redis que esperan (sin entregar, o entregados y sin
 # confirmar). Si no bajan en 15 minutos, los workers no dan abasto o están fallando, y los snippets quedan en PENDING.
 resource "newrelic_nrql_alert_condition" "stream_backlog" {
-  policy_id   = newrelic_alert_policy.snippet_searcher.id
+  policy_id   = newrelic_alert_policy.degradacion.id
   name        = "Cola de Redis atrasada"
   description = "Más de ${var.stream_backlog_threshold} mensajes esperando en {{tag.stream}} hace 15 minutos. Ver si language-service responde y si hay errores en el linteo en segundo plano."
   type        = "static"
@@ -288,7 +318,7 @@ resource "newrelic_nrql_alert_condition" "stream_backlog" {
 
 # La VM dejó de reportar: está apagada (Azure la desasignó), se colgó, o se cayó el agente de infraestructura.
 resource "newrelic_nrql_alert_condition" "host_not_reporting" {
-  policy_id   = newrelic_alert_policy.snippet_searcher.id
+  policy_id   = newrelic_alert_policy.caidas.id
   name        = "VM sin reportar"
   description = "La VM ${local.host} no manda métricas hace 5 minutos. Revisar en Azure si está prendida."
   type        = "static"
@@ -317,7 +347,7 @@ resource "newrelic_nrql_alert_condition" "host_not_reporting" {
 # Un container de Swarm cerca de su límite de memoria. Al llegar, Docker lo mata (OOM) y Swarm levanta otro: por ejemplo
 # un snippet enorme que snippet-service tiene que tener entero en memoria, varias veces, para validarlo y guardarlo.
 resource "newrelic_nrql_alert_condition" "container_memory" {
-  policy_id   = newrelic_alert_policy.snippet_searcher.id
+  policy_id   = newrelic_alert_policy.caidas.id
   name        = "Container cerca del límite de memoria"
   description = "{{tag.label.com.docker.swarm.service.name}} usa más del 90% de su límite: si llega, Docker lo mata."
   type        = "static"
@@ -349,15 +379,18 @@ resource "newrelic_nrql_alert_condition" "container_memory" {
 # Swarm no reinicia un container: crea uno nuevo. Un servicio con más de 2 containers distintos en 10 minutos se está
 # cayendo y volviendo a levantar (crash loop), o un deploy no termina de levantar y hace rollback. Un deploy normal con
 # start-first son 2: el viejo y el nuevo.
+# Solo cuentan los que estaban corriendo: Swarm guarda los containers parados como historial de tareas, y el agente
+# los sigue reportando (state 'exited'). Sin ese filtro, un deploy y un kill dejaban 3 para siempre y la alerta no se
+# cerraba nunca, y cualquier caída se sumaba a ese incidente sin mandar mail.
 resource "newrelic_nrql_alert_condition" "container_churn" {
-  policy_id   = newrelic_alert_policy.snippet_searcher.id
+  policy_id   = newrelic_alert_policy.caidas.id
   name        = "Container reiniciándose"
   description = "{{tag.label.com.docker.swarm.service.name}} tuvo más de 2 containers en 10 minutos: se cae y Swarm lo vuelve a levantar."
   type        = "static"
   enabled     = true
 
   nrql {
-    query = "SELECT uniqueCount(containerId) FROM ContainerSample WHERE ${local.infra_filter} FACET `label.com.docker.swarm.service.name`"
+    query = "SELECT uniqueCount(containerId) FROM ContainerSample WHERE ${local.infra_filter} AND state = 'running' FACET `label.com.docker.swarm.service.name`"
   }
 
   critical {
@@ -381,7 +414,7 @@ resource "newrelic_nrql_alert_condition" "host_resources" {
     disk   = { query = "SELECT max(diskUsedPercent) FROM StorageSample", title = "Disco", threshold = 85 }
   }
 
-  policy_id   = newrelic_alert_policy.snippet_searcher.id
+  policy_id   = newrelic_alert_policy.degradacion.id
   name        = "${each.value.title} de la VM alta"
   description = "${each.value.title} de ${local.host} por encima del ${each.value.threshold}%. Con el disco lleno, Postgres y Redis dejan de escribir."
   type        = "static"
@@ -424,36 +457,52 @@ resource "newrelic_notification_destination" "team_email" {
   }
 }
 
+# Un canal y un workflow por política: el asunto del mail dice de cuál es ("[snippet-searcher-dev caídas] ...").
 resource "newrelic_notification_channel" "team_email" {
-  name           = "${local.prefix} mail"
+  for_each = local.policies
+
+  name           = "${each.value.name} mail"
   type           = "EMAIL"
   destination_id = newrelic_notification_destination.team_email.id
   product        = "IINT"
 
   property {
     key   = "subject"
-    value = "[${local.prefix}] {{issueTitle}}"
+    value = "[${each.value.name}] {{issueTitle}}"
   }
 }
 
 # Cada incidente de la política, cuando se abre, se reconoce y se cierra, llega por mail.
 resource "newrelic_workflow" "team" {
-  name                  = "${local.prefix} avisos"
+  for_each = local.policies
+
+  name                  = "${each.value.name} avisos"
   muting_rules_handling = "NOTIFY_ALL_ISSUES"
 
   issues_filter {
-    name = "Política ${local.prefix}"
+    name = "Política ${each.value.name}"
     type = "FILTER"
 
     predicate {
       attribute = "labels.policyIds"
       operator  = "EXACTLY_MATCHES"
-      values    = [newrelic_alert_policy.snippet_searcher.id]
+      values    = [each.value.id]
     }
   }
 
   destination {
-    channel_id            = newrelic_notification_channel.team_email.id
+    channel_id            = newrelic_notification_channel.team_email[each.key].id
     notification_triggers = ["ACTIVATED", "ACKNOWLEDGED", "CLOSED"]
   }
+}
+
+# El canal y el workflow de antes son los de caídas.
+moved {
+  from = newrelic_notification_channel.team_email
+  to   = newrelic_notification_channel.team_email["caidas"]
+}
+
+moved {
+  from = newrelic_workflow.team
+  to   = newrelic_workflow.team["caidas"]
 }
